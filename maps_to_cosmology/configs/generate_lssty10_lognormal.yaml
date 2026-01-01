@@ -29,3 +29,33 @@ z0: 0.11
 # Simulation settings
 model_type: lognormal
 with_noise: false
+
+# Prior distributions for Lambda-CDM cosmological parameters
+prior:
+  omega_c:
+    _target_: maps_to_cosmology.prior.TruncatedNormal
+    loc: 0.2664
+    scale: 0.2
+    low: 0.0
+  omega_b:
+    _target_: maps_to_cosmology.prior.Normal
+    loc: 0.0492
+    scale: 0.006
+  sigma_8:
+    _target_: maps_to_cosmology.prior.Normal
+    loc: 0.831
+    scale: 0.14
+  h_0:
+    _target_: maps_to_cosmology.prior.Normal
+    loc: 0.6727
+    scale: 0.063
+  n_s:
+    _target_: maps_to_cosmology.prior.Normal
+    loc: 0.9645
+    scale: 0.08
+  w_0:
+    _target_: maps_to_cosmology.prior.TruncatedNormal
+    loc: -1.0
+    scale: 0.9
+    low: -2.0
+    high: -0.3

@@ -21,48 +21,46 @@ import jax.numpy as jnp
 import numpy as np
 import torch
 from jax import random, vmap
-from numpyro.handlers import seed, trace
+from numpyro.handlers import condition, seed, trace
 from omegaconf import DictConfig
 from tqdm import tqdm
 
 from sbi_lens.simulator.LogNormal_field import lensingLogNormal
 
-# Cosmological parameter names (lowercase, matching sbi_lens trace keys)
-PARAM_NAMES = ["omega_c", "omega_b", "sigma_8", "h_0", "n_s", "w_0"]
+from maps_to_cosmology.prior import LambdaCDMPrior
 
 
-def sample_single(model, key):
-    """Sample a single convergence map from the model.
+def sample_single(model, key, params_dict):
+    """Sample a single convergence map with fixed cosmological parameters.
 
     Args:
-        model: Partial function of lensingLogNormal with fixed parameters
+        model: Partial function of lensingLogNormal with fixed survey parameters
         key: JAX PRNG key
+        params_dict: Dict of cosmological parameter values to condition on
 
     Returns:
-        Tuple of (convergence_map, stacked_parameters)
+        Convergence map (kappa)
     """
-    model_trace = trace(seed(model, key)).get_trace()
-
-    kappa = model_trace["y"]["value"]
-    params = jnp.stack([model_trace[name]["value"] for name in PARAM_NAMES])
-
-    return kappa, params
+    model_trace = trace(seed(condition(model, data=params_dict), key)).get_trace()
+    return model_trace["y"]["value"]
 
 
-def create_batched_sampler(model):
+def create_batched_sampler(model, param_names):
     """Create a vmapped sampler for efficient batch generation.
 
     Args:
-        model: Partial function of lensingLogNormal with fixed parameters
+        model: Partial function of lensingLogNormal with fixed survey parameters
+        param_names: List of cosmological parameter names
 
     Returns:
-        Function that takes a batch of keys and returns batched (maps, params)
+        Function that takes batched keys and params and returns batched maps
     """
 
-    def _sample(key):
-        return sample_single(model, key)
+    def _sample(key, params_dict):
+        return sample_single(model, key, params_dict)
 
-    return vmap(_sample)
+    # vmap over both key and each parameter value
+    return vmap(_sample, in_axes=(0, {name: 0 for name in param_names}))
 
 
 @hydra.main(
@@ -86,10 +84,11 @@ def main(cfg: DictConfig) -> None:
     output_dir = Path(cfg.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Save parameter names
+    # Create prior and save parameter names
+    prior = LambdaCDMPrior(cfg.prior)
     param_names_path = output_dir / "param_names.txt"
     with open(param_names_path, "w") as f:
-        f.write(",".join(PARAM_NAMES) + "\n")
+        f.write(",".join(prior.param_names) + "\n")
 
     # Check for existing progress
     existing_batches = sorted(output_dir.glob("batch_*.pt"))
@@ -116,12 +115,14 @@ def main(cfg: DictConfig) -> None:
     )
 
     # Create batched sampler
-    batched_sampler = create_batched_sampler(model)
+    batched_sampler = create_batched_sampler(model, prior.param_names)
 
     # Initialize random key and advance to correct position
     key = random.PRNGKey(cfg.seed)
     for _ in range(start_batch):
-        key, *_ = random.split(key, cfg.batch_size + 1)
+        key, *_ = random.split(
+            key, cfg.batch_size + 2
+        )  # +2 for prior key and batch keys
 
     # Calculate number of batches
     num_batches = (cfg.num_maps + cfg.batch_size - 1) // cfg.batch_size
@@ -140,20 +141,29 @@ def main(cfg: DictConfig) -> None:
     start_time = time.time()
 
     for batch_idx in tqdm(range(start_batch, num_batches), desc="Generating batches"):
-        # Generate batch of keys
+        # Sample cosmological parameters from prior
+        key, prior_key = random.split(key)
+        params_batch = prior.sample_batch(prior_key, cfg.batch_size)
+
+        # Generate batch of keys for map generation
         key, *batch_keys = random.split(key, cfg.batch_size + 1)
         batch_keys = jnp.stack(batch_keys)
 
-        # Generate batch of maps
-        maps_batch, params_batch = batched_sampler(batch_keys)
+        # Generate batch of maps with fixed cosmological parameters
+        maps_batch = batched_sampler(batch_keys, params_batch)
 
         # Wait for computation to complete (for accurate timing)
         jax.block_until_ready(maps_batch)
 
+        # Stack params into array [batch_size, num_params]
+        params_array = jnp.stack(
+            [params_batch[name] for name in prior.param_names], axis=1
+        )
+
         # Convert to torch tensors and save
         batch_data = {
             "maps": torch.from_numpy(np.array(maps_batch)),
-            "params": torch.from_numpy(np.array(params_batch)),
+            "params": torch.from_numpy(np.array(params_array)),
         }
         batch_path = output_dir / f"batch_{batch_idx:05d}.pt"
         torch.save(batch_data, batch_path)
@@ -175,7 +185,7 @@ def main(cfg: DictConfig) -> None:
     print(f"\nSaved {total_batches} batch files to {output_dir}")
     print(f"  - batch_00000.pt ... batch_{total_batches - 1:05d}.pt")
     print(f"  - Total maps: {total_maps} ({maps_size_mb:.1f} MB)")
-    print(f"  - param_names.txt: {PARAM_NAMES}")
+    print(f"  - param_names.txt: {prior.param_names}")
 
 
 if __name__ == "__main__":
