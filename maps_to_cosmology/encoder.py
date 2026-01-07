@@ -14,13 +14,13 @@ class Encoder(LightningModule):
     def __init__(
         self,
         hidden_dim: int = 128,
-        num_params: int = 6,
+        num_cosmo_params: int = 6,
         lr: float = 1e-3,
     ):
         super().__init__()
         self.save_hyperparameters()
         self.lr = lr
-        self.num_params = num_params
+        self.num_cosmo_params = num_cosmo_params
 
         self.net = nn.Sequential(
             nn.Flatten(),
@@ -28,7 +28,7 @@ class Encoder(LightningModule):
             nn.SiLU(),
             nn.Linear(hidden_dim, hidden_dim),
             nn.SiLU(),
-            nn.Linear(hidden_dim, num_params * 2),
+            nn.Linear(hidden_dim, num_cosmo_params * 2),
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:

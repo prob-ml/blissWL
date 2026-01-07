@@ -1,42 +1,41 @@
-# Neural Posterior Estimation Training Config
-
-# Hydra settings
 hydra:
   run:
     dir: .
   output_subdir: null
 
-# Data settings
-data:
+paths:
   data_dir: /data/scratch/convergence_maps
+  output: maps_to_cosmology
+
+convergence_maps:
   batch_size: 32
   num_workers: 4
   val_split: 0.1
   test_split: 0.1
 
-# Model settings
-model:
+encoder:
   hidden_dim: 128
-  num_params: 6
+  num_cosmo_params: 6
   lr: 1e-3
 
-# Trainer settings
-trainer:
-  max_epochs: 200
-  accelerator: gpu
-  devices: 1
-  log_every_n_steps: 50
-
-# Checkpoint settings
-checkpoint:
-  dirpath: checkpoints
-  filename: "npe-{epoch:02d}-{val_loss:.4f}"
-  monitor: val_loss
-  mode: min
-  save_top_k: 1
-
-# Early stopping
-early_stopping:
-  monitor: val_loss
-  patience: 10
-  mode: min
+train:
+  trainer:
+    max_epochs: 200
+    accelerator: gpu
+    devices: 1
+    log_every_n_steps: 10
+  logger:
+    _target_: lightning.pytorch.loggers.TensorBoardLogger
+    save_dir: ${paths.output}
+    name: results
+    version: ${now:%m-%d|%H:%M:%S}
+  callbacks:
+    checkpoint:
+      filename: "encoder_{epoch:02d}"
+      monitor: val_loss
+      mode: min
+      save_top_k: 1
+    early_stopping:
+      monitor: val_loss
+      patience: 20
+      mode: min

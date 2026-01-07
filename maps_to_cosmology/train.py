@@ -1,4 +1,5 @@
 import hydra
+from hydra.utils import instantiate
 from lightning import Trainer
 from lightning.pytorch.callbacks import EarlyStopping, ModelCheckpoint
 from omegaconf import DictConfig
@@ -12,41 +13,45 @@ def main(cfg: DictConfig) -> None:
     """Train the neural posterior estimation model."""
     # Create data module
     datamodule = ConvergenceMapsModule(
-        data_dir=cfg.data.data_dir,
-        batch_size=cfg.data.batch_size,
-        num_workers=cfg.data.num_workers,
-        val_split=cfg.data.val_split,
-        test_split=cfg.data.test_split,
+        data_dir=cfg.paths.data_dir,
+        batch_size=cfg.convergence_maps.batch_size,
+        num_workers=cfg.convergence_maps.num_workers,
+        val_split=cfg.convergence_maps.val_split,
+        test_split=cfg.convergence_maps.test_split,
     )
 
     # Create model
     model = Encoder(
-        hidden_dim=cfg.model.hidden_dim,
-        num_params=cfg.model.num_params,
-        lr=cfg.model.lr,
+        hidden_dim=cfg.encoder.hidden_dim,
+        num_cosmo_params=cfg.encoder.num_cosmo_params,
+        lr=cfg.encoder.lr,
     )
+
+    # Create logger
+    logger = instantiate(cfg.train.logger)
 
     # Create callbacks
     checkpoint_callback = ModelCheckpoint(
-        dirpath=cfg.checkpoint.dirpath,
-        filename=cfg.checkpoint.filename,
-        monitor=cfg.checkpoint.monitor,
-        mode=cfg.checkpoint.mode,
-        save_top_k=cfg.checkpoint.save_top_k,
+        dirpath=f"{logger.log_dir}/checkpoints",
+        filename=cfg.train.callbacks.checkpoint.filename,
+        monitor=cfg.train.callbacks.checkpoint.monitor,
+        mode=cfg.train.callbacks.checkpoint.mode,
+        save_top_k=cfg.train.callbacks.checkpoint.save_top_k,
     )
 
     early_stopping_callback = EarlyStopping(
-        monitor=cfg.early_stopping.monitor,
-        patience=cfg.early_stopping.patience,
-        mode=cfg.early_stopping.mode,
+        monitor=cfg.train.callbacks.early_stopping.monitor,
+        patience=cfg.train.callbacks.early_stopping.patience,
+        mode=cfg.train.callbacks.early_stopping.mode,
     )
 
     # Create trainer
     trainer = Trainer(
-        max_epochs=cfg.trainer.max_epochs,
-        accelerator=cfg.trainer.accelerator,
-        devices=cfg.trainer.devices,
-        log_every_n_steps=cfg.trainer.log_every_n_steps,
+        max_epochs=cfg.train.trainer.max_epochs,
+        accelerator=cfg.train.trainer.accelerator,
+        devices=cfg.train.trainer.devices,
+        log_every_n_steps=cfg.train.trainer.log_every_n_steps,
+        logger=logger,
         callbacks=[checkpoint_callback, early_stopping_callback],
     )
 

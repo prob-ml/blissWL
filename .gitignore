@@ -1,5 +1,5 @@
 **/*.out
 **/*.log
 **/__pycache__
-**/checkpoints
 **/lightning_logs
+**/results

@@ -16,6 +16,7 @@ dependencies = [
     "numpy>=2.3.5",
     "omegaconf>=2.3.0",
     "sbi_lens @ git+https://github.com/timwhite0/sbi_lens.git",
+    "tensorboard>=2.18.0",
     "torch>=2.9.1",
     "torchmetrics>=1.8.2",
     "torchvision>=0.24.1",
