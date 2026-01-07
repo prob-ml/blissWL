@@ -42,7 +42,7 @@ class Encoder(LightningModule):
         """
         return self.net(x)
 
-    def loss(self, x: torch.Tensor, params: torch.Tensor) -> torch.Tensor:
+    def compute_loss(self, x: torch.Tensor, params: torch.Tensor) -> torch.Tensor:
         """Compute negative log-likelihood loss.
 
         Args:
@@ -53,17 +53,15 @@ class Encoder(LightningModule):
             Mean NLL loss
         """
         out = self.forward(x)  # [B, 12]
-        loc = out[:, 0::2]  # [B, 6] - even indices
-        scale = (
-            torch.clamp(out[:, 1::2], -10, 10).exp().sqrt()
-        )  # [B, 6] - BLISS approach
+        loc = out[:, 0::2]  # [B, 6]
+        scale = torch.clamp(out[:, 1::2], -10, 10).exp().sqrt()  # [B, 6]
         dist = torch.distributions.Normal(loc, scale)
         nll = -dist.log_prob(params).sum(dim=-1).mean()
         return nll
 
     def training_step(self, batch: tuple, batch_idx: int) -> torch.Tensor:
         maps, params = batch
-        loss = self.loss(maps, params)
+        loss = self.compute_loss(maps, params)
         self.log("train_loss", loss, prog_bar=True)
         return loss
 
@@ -84,8 +82,14 @@ class Encoder(LightningModule):
                     print(f"{sample_idx:<8} {name:<10} {pred:>12.4f} {true:>12.4f}")
                 print()
 
-        loss = self.loss(maps, params)
+        loss = self.compute_loss(maps, params)
         self.log("val_loss", loss, prog_bar=True)
+        return loss
+
+    def test_step(self, batch: tuple, batch_idx: int) -> torch.Tensor:
+        maps, params = batch
+        loss = self.compute_loss(maps, params)
+        self.log("test_loss", loss, prog_bar=True)
         return loss
 
     def configure_optimizers(self):

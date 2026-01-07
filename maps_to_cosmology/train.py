@@ -15,7 +15,8 @@ def main(cfg: DictConfig) -> None:
         data_dir=cfg.data.data_dir,
         batch_size=cfg.data.batch_size,
         num_workers=cfg.data.num_workers,
-        train_val_split=cfg.data.train_val_split,
+        val_split=cfg.data.val_split,
+        test_split=cfg.data.test_split,
     )
 
     # Create model

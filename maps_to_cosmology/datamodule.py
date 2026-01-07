@@ -2,6 +2,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import torch
+from einops import rearrange
 from lightning import LightningDataModule
 from torch.utils.data import DataLoader, Dataset, random_split
 from tqdm.auto import tqdm
@@ -25,7 +26,7 @@ class ConvergenceMapsDataset(Dataset):
 
     def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor]:
         # Transpose from [256, 256, 5] to [5, 256, 256] for PyTorch conv layers
-        maps = self.maps[idx].permute(2, 0, 1)
+        maps = rearrange(self.maps[idx], "h w b -> b h w")
         params = self.params[idx]
         return maps, params
 
@@ -38,7 +39,8 @@ class ConvergenceMapsModule(LightningDataModule):
         data_dir: str,
         batch_size: int = 64,
         num_workers: int = 4,
-        train_val_split: float = 0.9,
+        val_split: float = 0.1,
+        test_split: float = 0.1,
     ):
         """Initialize data module.
 
@@ -46,20 +48,23 @@ class ConvergenceMapsModule(LightningDataModule):
             data_dir: Directory containing batch_*.pt files
             batch_size: Batch size for dataloaders
             num_workers: Number of workers for dataloaders
-            train_val_split: Fraction of data to use for training
+            val_split: Fraction of data to use for validation
+            test_split: Fraction of data to use for testing
         """
         super().__init__()
         self.save_hyperparameters()
         self.data_dir = Path(data_dir)
         self.batch_size = batch_size
         self.num_workers = num_workers
-        self.train_val_split = train_val_split
+        self.val_split = val_split
+        self.test_split = test_split
 
         self.train_dataset = None
         self.val_dataset = None
+        self.test_dataset = None
 
     def setup(self, stage: str | None = None):  # noqa: ARG002
-        """Load data and create train/val splits."""
+        """Load data and create train/val/test splits."""
         if self.train_dataset is not None:
             return  # Already set up
 
@@ -97,19 +102,22 @@ class ConvergenceMapsModule(LightningDataModule):
         print(f"Maps shape: {all_maps.shape}")
         print(f"Params shape: {all_params.shape}")
 
-        # Create full dataset and split
+        # Create full dataset and split into train/val/test
         full_dataset = ConvergenceMapsDataset(all_maps, all_params)
-        train_size = int(len(full_dataset) * self.train_val_split)
-        val_size = len(full_dataset) - train_size
+        n_total = len(full_dataset)
+        n_val = int(n_total * self.val_split)
+        n_test = int(n_total * self.test_split)
+        n_train = n_total - n_val - n_test
 
-        self.train_dataset, self.val_dataset = random_split(
+        self.train_dataset, self.val_dataset, self.test_dataset = random_split(
             full_dataset,
-            [train_size, val_size],
+            [n_train, n_val, n_test],
             generator=torch.Generator().manual_seed(42),
         )
 
         print(f"Train samples: {len(self.train_dataset)}")
         print(f"Val samples: {len(self.val_dataset)}")
+        print(f"Test samples: {len(self.test_dataset)}")
 
     def train_dataloader(self) -> DataLoader:
         return DataLoader(
@@ -123,6 +131,15 @@ class ConvergenceMapsModule(LightningDataModule):
     def val_dataloader(self) -> DataLoader:
         return DataLoader(
             self.val_dataset,
+            batch_size=self.batch_size,
+            shuffle=False,
+            num_workers=self.num_workers,
+            pin_memory=True,
+        )
+
+    def test_dataloader(self) -> DataLoader:
+        return DataLoader(
+            self.test_dataset,
             batch_size=self.batch_size,
             shuffle=False,
             num_workers=self.num_workers,

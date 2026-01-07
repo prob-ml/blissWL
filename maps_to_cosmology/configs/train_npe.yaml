@@ -11,7 +11,8 @@ data:
   data_dir: /data/scratch/convergence_maps
   batch_size: 32
   num_workers: 4
-  train_val_split: 0.9
+  val_split: 0.1
+  test_split: 0.1
 
 # Model settings
 model:
