@@ -1,5 +1,5 @@
 [project]
-name = "weaklensing"
+name = "blissWL"
 version = "0.1.0"
 description = "Neural probabilistic mass mapping and cosmological parameter estimation."
 readme = "README.md"
@@ -24,6 +24,8 @@ dependencies = [
 
 [dependency-groups]
 dev = [
+    "ipykernel>=6.29.0",
+    "jupyter>=1.0.0",
     "pre-commit>=4.5.1",
     "ruff>=0.14.9",
 ]

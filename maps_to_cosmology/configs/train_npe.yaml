@@ -1,0 +1,42 @@
+# Neural Posterior Estimation Training Config
+
+# Hydra settings
+hydra:
+  run:
+    dir: .
+  output_subdir: null
+
+# Data settings
+data:
+  data_dir: /data/scratch/convergence_maps
+  batch_size: 32
+  num_workers: 4
+  train_val_split: 0.9
+
+# Model settings
+model:
+  conv_channels: [32, 64]
+  fc_dim: 128
+  num_params: 6
+  lr: 1e-3
+
+# Trainer settings
+trainer:
+  max_epochs: 200
+  accelerator: gpu
+  devices: 1
+  log_every_n_steps: 50
+
+# Checkpoint settings
+checkpoint:
+  dirpath: checkpoints
+  filename: "npe-{epoch:02d}-{val_loss:.4f}"
+  monitor: val_loss
+  mode: min
+  save_top_k: 1
+
+# Early stopping
+early_stopping:
+  monitor: val_loss
+  patience: 10
+  mode: min
