@@ -20,8 +20,7 @@ def main(cfg: DictConfig) -> None:
 
     # Create model
     model = Encoder(
-        conv_channels=list(cfg.model.conv_channels),
-        fc_dim=cfg.model.fc_dim,
+        hidden_dim=cfg.model.hidden_dim,
         num_params=cfg.model.num_params,
         lr=cfg.model.lr,
     )
