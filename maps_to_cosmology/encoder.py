@@ -1,5 +1,3 @@
-"""Neural posterior estimation encoder for cosmological parameters."""
-
 import torch
 import torch.nn as nn
 from lightning import LightningModule

@@ -1,5 +1,3 @@
-"""Training script for neural posterior estimation."""
-
 import hydra
 from lightning import Trainer
 from lightning.pytorch.callbacks import EarlyStopping, ModelCheckpoint

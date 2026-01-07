@@ -1,5 +1,3 @@
-"""Prior distributions over cosmological parameters."""
-
 from abc import ABC, abstractmethod
 
 import jax.numpy as jnp

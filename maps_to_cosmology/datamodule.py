@@ -1,5 +1,3 @@
-"""Data module for loading convergence maps."""
-
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
