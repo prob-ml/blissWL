@@ -1,11 +1,33 @@
+import matplotlib.pyplot as plt
+
 import hydra
 from hydra.utils import instantiate
 from lightning import Trainer
-from lightning.pytorch.callbacks import EarlyStopping, ModelCheckpoint
+from lightning.pytorch.callbacks import Callback, EarlyStopping, ModelCheckpoint
 from omegaconf import DictConfig
 
 from maps_to_cosmology.datamodule import ConvergenceMapsModule
 from maps_to_cosmology.encoder import Encoder
+
+
+class SaveBestScatterplot(Callback):
+    """Save omega_c scatterplot when a new best val_loss is achieved."""
+
+    def __init__(self, dirpath: str):
+        super().__init__()
+        self.dirpath = dirpath
+        self.best_val_loss = float("inf")
+
+    def on_validation_epoch_end(self, trainer, pl_module):
+        val_loss = trainer.callback_metrics.get("val_loss")
+        if val_loss is None:
+            return
+
+        if val_loss < self.best_val_loss:
+            self.best_val_loss = val_loss
+            fig = pl_module.val_scatter.create_omega_c_scatter()
+            fig.savefig(f"{self.dirpath}/best_omega_c_scatter.png", dpi=150)
+            plt.close(fig)
 
 
 @hydra.main(version_base=None, config_path="configs", config_name="train_npe")
@@ -45,6 +67,8 @@ def main(cfg: DictConfig) -> None:
         mode=cfg.train.callbacks.early_stopping.mode,
     )
 
+    scatterplot_callback = SaveBestScatterplot(dirpath=logger.log_dir)
+
     # Create trainer
     trainer = Trainer(
         max_epochs=cfg.train.trainer.max_epochs,
@@ -52,7 +76,7 @@ def main(cfg: DictConfig) -> None:
         devices=cfg.train.trainer.devices,
         log_every_n_steps=cfg.train.trainer.log_every_n_steps,
         logger=logger,
-        callbacks=[checkpoint_callback, early_stopping_callback],
+        callbacks=[checkpoint_callback, early_stopping_callback, scatterplot_callback],
     )
 
     # Train

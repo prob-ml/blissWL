@@ -29,6 +29,7 @@ train:
     save_dir: ${paths.output}
     name: results
     version: ${now:%m-%d|%H:%M:%S}
+    default_hp_metric: false
   callbacks:
     checkpoint:
       filename: "encoder_{epoch:02d}"

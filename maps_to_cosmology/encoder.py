@@ -1,6 +1,9 @@
+import matplotlib.pyplot as plt
 import torch
 import torch.nn as nn
 from lightning import LightningModule
+
+from maps_to_cosmology.metrics import RootMeanSquaredError, ScatterPlot
 
 
 class Encoder(LightningModule):
@@ -21,6 +24,13 @@ class Encoder(LightningModule):
         self.save_hyperparameters()
         self.lr = lr
         self.num_cosmo_params = num_cosmo_params
+        self.param_names = ["omega_c", "omega_b", "sigma_8", "h_0", "n_s", "w_0"]
+
+        # Metrics (separate instances for val/test)
+        self.val_rmse = RootMeanSquaredError(self.param_names)
+        self.val_scatter = ScatterPlot()
+        self.test_rmse = RootMeanSquaredError(self.param_names)
+        self.test_scatter = ScatterPlot()
 
         self.net = nn.Sequential(
             nn.Flatten(),
@@ -67,30 +77,65 @@ class Encoder(LightningModule):
 
     def validation_step(self, batch: tuple, batch_idx: int) -> torch.Tensor:
         maps, params = batch
+        out = self.forward(maps)
+        loc = out[:, 0::2]  # Posterior means [B, 6]
 
-        # Print predictions vs truth for first batch of each validation epoch
-        if batch_idx == 0:
-            out = self.forward(maps)
-            loc = out[:, 0::2]  # Posterior means [B, 6]
-            param_names = ["omega_c", "omega_b", "sigma_8", "h_0", "n_s", "w_0"]
-            print(f"\n{'Sample':<8} {'Param':<10} {'Predicted':>12} {'True':>12}")
-            print("-" * 44)
-            for sample_idx in range(loc.shape[0]):
-                for i, name in enumerate(param_names):
-                    pred = loc[sample_idx, i].item()
-                    true = params[sample_idx, i].item()
-                    print(f"{sample_idx:<8} {name:<10} {pred:>12.4f} {true:>12.4f}")
-                print()
+        # Update metrics
+        self.val_rmse.update(loc, params)
+        self.val_scatter.update(loc, params)
 
         loss = self.compute_loss(maps, params)
         self.log("val_loss", loss, prog_bar=True)
         return loss
 
+    def on_validation_epoch_end(self):
+        """Compute RMSE and generate scatterplot at end of validation epoch."""
+        # Log per-parameter RMSE
+        rmse = self.val_rmse.compute()
+        for name, value in rmse.items():
+            self.log(f"val_rmse_{name}", value)
+
+        # Log scatterplot
+        fig = self.val_scatter.create_omega_c_scatter()
+        self.logger.experiment.add_figure(
+            "val_omega_c_scatter", fig, self.current_epoch
+        )
+        plt.close(fig)
+
+        # Reset metrics
+        self.val_rmse.reset()
+        self.val_scatter.reset()
+
     def test_step(self, batch: tuple, batch_idx: int) -> torch.Tensor:
         maps, params = batch
+        out = self.forward(maps)
+        loc = out[:, 0::2]  # Posterior means [B, 6]
+
+        # Update metrics
+        self.test_rmse.update(loc, params)
+        self.test_scatter.update(loc, params)
+
         loss = self.compute_loss(maps, params)
         self.log("test_loss", loss, prog_bar=True)
         return loss
+
+    def on_test_epoch_end(self):
+        """Compute RMSE and generate scatterplot for test set."""
+        # Log per-parameter RMSE
+        rmse = self.test_rmse.compute()
+        for name, value in rmse.items():
+            self.log(f"test_rmse_{name}", value)
+
+        # Log scatterplot
+        fig = self.test_scatter.create_omega_c_scatter()
+        self.logger.experiment.add_figure(
+            "test_omega_c_scatter", fig, self.current_epoch
+        )
+        plt.close(fig)
+
+        # Reset metrics
+        self.test_rmse.reset()
+        self.test_scatter.reset()
 
     def configure_optimizers(self):
         return torch.optim.Adam(self.parameters(), lr=self.lr)
