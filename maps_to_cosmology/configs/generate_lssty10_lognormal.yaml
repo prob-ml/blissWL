@@ -38,21 +38,25 @@ prior:
     scale: 0.2
     low: 0.0
   omega_b:
-    _target_: maps_to_cosmology.prior.Normal
+    _target_: maps_to_cosmology.prior.TruncatedNormal
     loc: 0.0492
     scale: 0.006
+    low: 0.0
   sigma_8:
-    _target_: maps_to_cosmology.prior.Normal
+    _target_: maps_to_cosmology.prior.TruncatedNormal
     loc: 0.831
     scale: 0.14
+    low: 0.0
   h_0:
-    _target_: maps_to_cosmology.prior.Normal
+    _target_: maps_to_cosmology.prior.TruncatedNormal
     loc: 0.6727
     scale: 0.063
+    low: 0.0
   n_s:
-    _target_: maps_to_cosmology.prior.Normal
+    _target_: maps_to_cosmology.prior.TruncatedNormal
     loc: 0.9645
     scale: 0.08
+    low: 0.0
   w_0:
     _target_: maps_to_cosmology.prior.TruncatedNormal
     loc: -1.0
