@@ -6,7 +6,7 @@ hydra:
     dir: .
   output_subdir: null
 
-output_dir: /data/scratch/convergence_maps
+output_dir: /data/scratch/convergence_maps/lsst_y10_lognormal
 num_maps: 100000
 seed: 42
 batch_size: 16  # Number of maps to generate in parallel (adjust for GPU memory)

@@ -64,7 +64,7 @@ def create_batched_sampler(model, param_names):
 
 
 @hydra.main(
-    version_base=None, config_path="configs", config_name="generate_lssty10_lognormal"
+    version_base=None, config_path="configs", config_name="generate_lsst_y10_lognormal"
 )
 def main(cfg: DictConfig) -> None:
     """Main function for generating convergence maps."""
