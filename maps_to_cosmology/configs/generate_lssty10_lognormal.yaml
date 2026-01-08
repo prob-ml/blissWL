@@ -1,25 +1,23 @@
-# LSST Year 10 Log-normal Simulation Config
+defaults:
+  - override hydra/job_logging: none
 
-# Hydra settings
 hydra:
   run:
     dir: .
   output_subdir: null
 
-# Output settings
 output_dir: /data/scratch/convergence_maps
 num_maps: 100000
 seed: 42
 batch_size: 16  # Number of maps to generate in parallel (adjust for GPU memory)
 
-# Map parameters (LSST Y10 defaults)
-N: 256                   # Resolution (256x256 pixels)
-map_size: 10             # Field of view in degrees
+N: 256        # Resolution (256x256 tiles)
+map_size: 10  # Field of view in degrees
 
 # Galaxy survey parameters
-sigma_e: 0.26            # Intrinsic shape noise
-gals_per_arcmin2: 27     # Galaxy density
-nbins: 5                 # Number of redshift bins
+sigma_e: 0.26         # Intrinsic shape noise
+gals_per_arcmin2: 27. # Galaxy density
+nbins: 5              # Number of redshift bins
 
 # Redshift distribution parameters (Smail distribution)
 a: 2.0
@@ -30,7 +28,7 @@ z0: 0.11
 model_type: lognormal
 with_noise: false
 
-# Prior distributions for Lambda-CDM cosmological parameters
+# Prior distributions for LambdaCDM parameters
 prior:
   omega_c:
     _target_: maps_to_cosmology.prior.TruncatedNormal

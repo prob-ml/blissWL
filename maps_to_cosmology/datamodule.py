@@ -41,6 +41,7 @@ class ConvergenceMapsModule(LightningDataModule):
         num_workers: int = 4,
         val_split: float = 0.1,
         test_split: float = 0.1,
+        seed: int = 42,
     ):
         """Initialize data module.
 
@@ -50,6 +51,7 @@ class ConvergenceMapsModule(LightningDataModule):
             num_workers: Number of workers for dataloaders
             val_split: Fraction of data to use for validation
             test_split: Fraction of data to use for testing
+            seed: Random seed for train/val/test split
         """
         super().__init__()
         self.save_hyperparameters()
@@ -58,6 +60,7 @@ class ConvergenceMapsModule(LightningDataModule):
         self.num_workers = num_workers
         self.val_split = val_split
         self.test_split = test_split
+        self.seed = seed
 
         self.train_dataset = None
         self.val_dataset = None
@@ -112,7 +115,7 @@ class ConvergenceMapsModule(LightningDataModule):
         self.train_dataset, self.val_dataset, self.test_dataset = random_split(
             full_dataset,
             [n_train, n_val, n_test],
-            generator=torch.Generator().manual_seed(42),
+            generator=torch.Generator().manual_seed(self.seed),
         )
 
         print(f"Train samples: {len(self.train_dataset)}")

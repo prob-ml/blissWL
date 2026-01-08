@@ -2,7 +2,7 @@ import matplotlib.pyplot as plt
 
 import hydra
 from hydra.utils import instantiate
-from lightning import Trainer
+from lightning import Trainer, seed_everything
 from lightning.pytorch.callbacks import Callback, EarlyStopping, ModelCheckpoint
 from omegaconf import DictConfig
 
@@ -33,6 +33,8 @@ class SaveBestScatterplot(Callback):
 @hydra.main(version_base=None, config_path="configs", config_name="train_npe")
 def main(cfg: DictConfig) -> None:
     """Train the neural posterior estimation model."""
+    seed_everything(cfg.seed, workers=True)
+
     # Create data module
     datamodule = ConvergenceMapsModule(
         data_dir=cfg.paths.data_dir,
@@ -40,6 +42,7 @@ def main(cfg: DictConfig) -> None:
         num_workers=cfg.convergence_maps.num_workers,
         val_split=cfg.convergence_maps.val_split,
         test_split=cfg.convergence_maps.test_split,
+        seed=cfg.seed,
     )
 
     # Create model
