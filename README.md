@@ -1,6 +1,6 @@
 # blissWL
 
-This repository implements two forms of neural probabilistic weak lensing inference. The first infers convergence maps from images, and the second infers LambdaCDM parameters from convergence maps. This repository is part of the [Bayesian Light Source Separator (BLISS)](https://github.com/prob-ml/bliss) software family.
+This repository is part of the [Bayesian Light Source Separator (BLISS)](https://github.com/prob-ml/bliss) software family. It implements two forms of neural probabilistic weak lensing inference. The first infers convergence maps from images, and the second infers LambdaCDM parameters from convergence maps.
 
 ## Installation
 
