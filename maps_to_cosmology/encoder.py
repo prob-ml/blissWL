@@ -1,24 +1,26 @@
 import matplotlib.pyplot as plt
 import torch
-import torch.nn as nn
 from lightning import LightningModule
 
 from maps_to_cosmology.metrics import RootMeanSquaredError, ScatterPlot
+from maps_to_cosmology.networks import TwoLayerMLP
 
 
 class Encoder(LightningModule):
-    """Simple MLP that maps convergence maps to variational posterior parameters.
+    """Encoder that maps convergence maps to variational posterior parameters.
 
-    Takes convergence maps [B, 5, 256, 256] and outputs [B, 12] tensor with
-    alternating loc/scale parameters for 6 independent Normal distributions
-    over cosmological parameters.
+    Uses a TwoLayerMLP to process convergence maps [B, 5, 256, 256] and output
+    [B, 12] tensor with alternating loc/scale parameters for 6 independent
+    Normal distributions over cosmological parameters.
     """
 
     def __init__(
         self,
-        hidden_dim: int = 128,
-        num_cosmo_params: int = 6,
-        lr: float = 1e-3,
+        num_bins: int,
+        map_slen: int,
+        hidden_dim: int,
+        num_cosmo_params: int,
+        lr: float,
     ):
         super().__init__()
         self.save_hyperparameters()
@@ -32,13 +34,11 @@ class Encoder(LightningModule):
         self.test_rmse = RootMeanSquaredError(self.param_names)
         self.test_scatter = ScatterPlot()
 
-        self.net = nn.Sequential(
-            nn.Flatten(),
-            nn.Linear(5 * 256 * 256, hidden_dim),
-            nn.SiLU(),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.SiLU(),
-            nn.Linear(hidden_dim, num_cosmo_params * 2),
+        self.net = TwoLayerMLP(
+            num_bins=num_bins,
+            map_slen=map_slen,
+            hidden_dim=hidden_dim,
+            output_dim=num_cosmo_params * 2,
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:

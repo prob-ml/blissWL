@@ -47,6 +47,8 @@ def main(cfg: DictConfig) -> None:
 
     # Create model
     model = Encoder(
+        num_bins=cfg.encoder.num_bins,
+        map_slen=cfg.encoder.map_slen,
         hidden_dim=cfg.encoder.hidden_dim,
         num_cosmo_params=cfg.encoder.num_cosmo_params,
         lr=cfg.encoder.lr,

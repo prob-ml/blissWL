@@ -19,6 +19,8 @@ convergence_maps:
   test_split: 0.1
 
 encoder:
+  num_bins: 5
+  map_slen: 256
   hidden_dim: 128
   num_cosmo_params: 6
   lr: 1e-4
