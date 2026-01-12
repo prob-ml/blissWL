@@ -1,5 +1,8 @@
 **/*.out
 **/*.log
+**/*.pt
 **/__pycache__
 **/lightning_logs
-**/results
+maps_to_cosmology/results
+**/scratch
+**/figures

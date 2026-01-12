@@ -20,7 +20,76 @@ uv sync --group dev
 
 ## Images to maps
 
-*Coming soon.* This module will implement neural posterior estimation (NPE) for inferring mass maps from full-field astronomical images.
+This module implements neural posterior estimation (NPE) for inferring weak lensing shear and convergence from LSST-like images. It supports two applications:
+
+1. **DC2**: Infer tomographic mass maps for the [DC2 Simulated Sky Survey](https://data.lsstdesc.org/doc/dc2_sim_sky_survey)
+2. **descwl-shear-sims**: Infer constant shear from images generated with [`descwl-shear-sims`](https://github.com/timwhite0/descwl-shear-sims)
+
+### DC2
+
+#### Generate catalog
+
+```bash
+python -u images_to_maps/dc2/generate_catalog.py
+```
+
+#### Train MassMapEncoder
+
+```bash
+python -m images_to_maps.dc2.train
+```
+
+Or with Hydra config override:
+
+```bash
+python -m images_to_maps.dc2.train --config-path=. --config-name=config_train_npe
+```
+
+#### Notebooks
+
+- **Results**: `images_to_maps/dc2/results/credibleintervals.ipynb`, `posteriormeanmaps.ipynb`
+- **Exploratory**: `images_to_maps/dc2/exploratory/dc2imageandmaps.ipynb`, `ellipticity.ipynb`, `galaxyproperties.ipynb`, `twopoint.ipynb`
+
+### descwl-shear-sims
+
+#### Train ScalarShearEncoder
+
+```bash
+python -m images_to_maps.descwl.train
+```
+
+Or with Hydra config override:
+
+```bash
+python -m images_to_maps.descwl.train --config-path=. --config-name=config_train_npe
+```
+
+#### Run AnaCal
+
+Configure settings in `images_to_maps/descwl/config_run_anacal.yaml`.
+
+```bash
+python -u images_to_maps/descwl/run_anacal.py
+```
+
+#### Notebooks
+
+- **Results**: `images_to_maps/descwl/results/compute_npe_credibleintervals.py`, `credibleintervals.ipynb`, `scatterplots.ipynb`
+- **Exploratory**: `images_to_maps/descwl/exploratory/images.ipynb`
+
+### View training logs
+
+Training logs are saved to TensorBoard. View with:
+
+```bash
+tensorboard --logdir=images_to_maps/dc2/results
+```
+
+or for descwl:
+
+```bash
+tensorboard --logdir=images_to_maps/descwl/results
+```
 
 ## Maps to cosmology
 
