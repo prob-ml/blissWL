@@ -1,8 +1,14 @@
+# file types
 **/*.out
 **/*.log
 **/*.pt
+
+# scratch folders
 **/__pycache__
 **/lightning_logs
-maps_to_cosmology/results
 **/scratch
 **/figures
+
+# results
+maps_to_cosmology/results*
+images_to_maps/results*

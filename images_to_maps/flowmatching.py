@@ -5,7 +5,6 @@ import torch
 from einops import rearrange
 
 from images_to_maps.convnet import MassMapNet
-from images_to_maps.variational_dist import VariationalDist
 
 
 class TimeEncoder(L.LightningModule):
@@ -56,11 +55,10 @@ class FlowMatching(L.LightningModule):
         more_up_layers: bool,
         num_bottleneck_layers: int,
         image_normalizers: list,
-        var_dist: VariationalDist,
         t_embed_dim: int,
         num_redshift_bins: int,
         velo_net_channels: int,
-        scale_factor: float,
+        scale_factor: float = 1.0,
         optimizer_params: Optional[dict] = None,
     ):
         super().__init__()
@@ -99,10 +97,10 @@ class FlowMatching(L.LightningModule):
             initial_downsample=self.initial_downsample,
             more_up_layers=self.more_up_layers,
             num_bottleneck_layers=self.num_bottleneck_layers,
-            n_var_params=self.var_dist.n_params_per_source,
+            map_to_var_params=False,
         )
         self.time_encoder = TimeEncoder(
-            t_embed_dim=self.t_embed_dim, expand_dim=self.n_tiles_per_side
+            t_embed_dim=self.t_embed_dim, expand_dim=self.res_final
         )
         self.velocity_net = VelocityNet(
             z_dim=self.z_dim,
