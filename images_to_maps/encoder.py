@@ -63,6 +63,7 @@ class MassMapEncoder(L.LightningModule):
         self.epoch_val_losses = []
         self.current_epoch_val_loss = 0.0
         self.current_epoch_val_batches = 0
+        self.best_val_loss = float("inf")
 
     def initialize_networks(self):
         ch_per_band = sum(
@@ -196,8 +197,6 @@ class MassMapEncoder(L.LightningModule):
         if self.sample_metrics is not None:
             self.report_metrics(self.sample_metrics, "val/sample")
             self.sample_metrics.reset()
-        if self.sample_image_renders is not None:
-            self.report_metrics(self.sample_image_renders, "val/image_renders")
 
         avg_epoch_val_loss = (
             self.current_epoch_val_loss / self.current_epoch_val_batches
@@ -208,6 +207,13 @@ class MassMapEncoder(L.LightningModule):
         print(
             f"Average val loss for epoch {self.current_epoch}: {avg_epoch_val_loss}",
         )
+
+        # Only save plots if this is the best val loss so far
+        if self.sample_image_renders is not None:
+            if avg_epoch_val_loss < self.best_val_loss:
+                self.best_val_loss = avg_epoch_val_loss
+                self.report_metrics(self.sample_image_renders, "val/image_renders")
+            self.sample_image_renders.reset()
 
     def on_test_epoch_end(self):
         self.report_metrics(self.mode_metrics, "test/mode")
@@ -275,6 +281,7 @@ class ScalarShearEncoder(L.LightningModule):
         self.epoch_val_losses = []
         self.current_epoch_val_loss = 0.0
         self.current_epoch_val_batches = 0
+        self.best_val_loss = float("inf")
 
     def initialize_networks(self):
         self.net = ScalarShearNet(
@@ -407,8 +414,6 @@ class ScalarShearEncoder(L.LightningModule):
         if self.sample_metrics is not None:
             self.report_metrics(self.sample_metrics, "val/sample")
             self.sample_metrics.reset()
-        if self.sample_image_renders is not None:
-            self.report_metrics(self.sample_image_renders, "val/image_renders")
 
         avg_epoch_val_loss = (
             self.current_epoch_val_loss / self.current_epoch_val_batches
@@ -419,6 +424,13 @@ class ScalarShearEncoder(L.LightningModule):
         print(
             f"Average val loss for epoch {self.current_epoch}: {avg_epoch_val_loss}",
         )
+
+        # Only save plots if this is the best val loss so far
+        if self.sample_image_renders is not None:
+            if avg_epoch_val_loss < self.best_val_loss:
+                self.best_val_loss = avg_epoch_val_loss
+                self.report_metrics(self.sample_image_renders, "val/image_renders")
+            self.sample_image_renders.reset()
 
     def on_test_epoch_end(self):
         self.report_metrics(self.mode_metrics, "test/mode")
