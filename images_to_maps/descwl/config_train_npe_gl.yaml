@@ -12,7 +12,7 @@ hydra:
 
 paths:
     cached_data: /nfs/turbo/lsa-regier/scratch/descwl/setting1
-    output: /scratch/regier_root/regier1/twhit/blissWL
+    output: images_to_maps
 
 cached_simulator:
     _target_: images_to_maps.cached_dataset.CachedSimulatedDataModule

@@ -12,7 +12,7 @@ hydra:
 
 paths:
     dc2: /scratch/regier_root/regier1/twhit/data/dc2
-    output: /scratch/regier_root/regier1/twhit/blissWL
+    output: images_to_maps
 
 variational_factors:
   - _target_: images_to_maps.variational_dist.IndependentMVNFactor
