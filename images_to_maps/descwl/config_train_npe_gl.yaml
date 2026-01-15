@@ -82,7 +82,7 @@ train:
         logger:
             _target_: lightning.pytorch.loggers.TensorBoardLogger
             save_dir: ${paths.output}
-            name: ResultsDescwl
+            name: results/descwl
             version: ${now:%Y-%m-%d_%H-%M}
             default_hp_metric: false
         reload_dataloaders_every_n_epochs: 0
