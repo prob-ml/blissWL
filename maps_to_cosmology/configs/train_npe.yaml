@@ -24,6 +24,11 @@ encoder:
   hidden_dim: 128
   num_cosmo_params: 6
   lr: 1e-4
+  var_dist:
+    _target_: maps_to_cosmology.distributions.IndependentMVN
+    num_params: ${encoder.num_cosmo_params}
+    low_clamp: -10
+    high_clamp: 10
 
 train:
   trainer:

@@ -1,6 +1,8 @@
 import matplotlib.pyplot as plt
 import torch
+from hydra.utils import instantiate
 from lightning import LightningModule
+from omegaconf import DictConfig
 
 from maps_to_cosmology.metrics import (
     RootMeanSquaredError,
@@ -25,6 +27,7 @@ class Encoder(LightningModule):
         hidden_dim: int,
         num_cosmo_params: int,
         lr: float,
+        var_dist_cfg: DictConfig,
     ):
         super().__init__()
         self.save_hyperparameters()
@@ -68,10 +71,7 @@ class Encoder(LightningModule):
             Mean NLL loss
         """
         out = self.forward(x)  # [B, 12]
-        loc = out[:, 0::2]  # [B, 6]
-        scale = torch.clamp(out[:, 1::2], -10, 10).exp().sqrt()  # [B, 6]
-        dist = torch.distributions.Normal(loc, scale)
-        nll = -dist.log_prob(params).sum(dim=-1).mean()
+        nll = -self.var_dist.log_prob(out, params).mean()
         return nll
 
     def training_step(self, batch: tuple, batch_idx: int) -> torch.Tensor:

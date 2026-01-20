@@ -53,6 +53,7 @@ def main(cfg: DictConfig) -> None:
         hidden_dim=cfg.encoder.hidden_dim,
         num_cosmo_params=cfg.encoder.num_cosmo_params,
         lr=cfg.encoder.lr,
+        var_dist_cfg=cfg.encoder.var_dist,
     )
 
     # Create logger
