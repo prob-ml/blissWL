@@ -28,3 +28,26 @@ class IndependentMVN:
             return params[:, 0::2]
         dist = self.get_dist(params)
         return dist.sample()
+
+
+class FullRankMVN:
+    """Full-rank multivariate normal variational distribution.
+
+    Models cosmological parameters as a MVN with full-rank covariance matrix,
+    allowing correlations between parameters.
+
+    TODO: Implement full-rank MVN architecture.
+    """
+
+    def __init__(self, num_params: int):
+        self.num_params = num_params
+        raise NotImplementedError
+
+    def get_dist(self, params: torch.Tensor):
+        raise NotImplementedError
+
+    def log_prob(self, params: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        raise NotImplementedError
+
+    def sample(self, params: torch.Tensor, use_mode: bool = False) -> torch.Tensor:
+        raise NotImplementedError
