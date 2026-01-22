@@ -103,11 +103,10 @@ class Encoder(LightningModule):
             self.log(f"val_pcc_{name}", value)
 
         # Log scatterplot
-        fig = self.val_scatter.create_omega_c_scatter()
-        self.logger.experiment.add_figure(
-            "val_omega_c_scatter", fig, self.current_epoch
-        )
-        plt.close(fig)
+        for i, name in enumerate(self.param_names):
+            fig = self.val_scatter.create_param_scatter(i, name)
+            self.logger.experiment.add_figure(f"val_scatter/{name}", fig, self.current_epoch)
+            plt.close(fig)
 
         # Reset metrics
         self.val_rmse.reset()
@@ -140,11 +139,10 @@ class Encoder(LightningModule):
             self.log(f"test_pcc_{name}", value)
 
         # Log scatterplot
-        fig = self.test_scatter.create_omega_c_scatter()
-        self.logger.experiment.add_figure(
-            "test_omega_c_scatter", fig, self.current_epoch
-        )
-        plt.close(fig)
+        for i, name in enumerate(self.param_names):
+            fig = self.test_scatter.create_param_scatter(i, name)
+            self.logger.experiment.add_figure(f"test_scatter/{name}", fig, self.current_epoch)
+            plt.close(fig)
 
         # Reset metrics
         self.test_rmse.reset()

@@ -44,11 +44,33 @@ class ScatterPlot(Metric):
         """Return concatenated predictions and targets."""
         return torch.cat(self.preds, dim=0), torch.cat(self.targets, dim=0)
 
-    def create_omega_c_scatter(self) -> plt.Figure:
-        """Create scatterplot of true vs predicted omega_c (index 0)."""
+    # def create_omega_c_scatter(self) -> plt.Figure:
+    #     """Create scatterplot of true vs predicted omega_c (index 0)."""
+    #     preds, targets = self.compute()
+    #     fig, ax = plt.subplots(figsize=(6, 6))
+    #     ax.scatter(targets[:, 0].cpu(), preds[:, 0].cpu(), alpha=0.5, s=10)
+
+    #     # Add diagonal line
+    #     lims = [
+    #         min(ax.get_xlim()[0], ax.get_ylim()[0]),
+    #         max(ax.get_xlim()[1], ax.get_ylim()[1]),
+    #     ]
+    #     ax.plot(lims, lims, "k--", alpha=0.5, label="y=x")
+    #     ax.set_xlim(lims)
+    #     ax.set_ylim(lims)
+
+    #     ax.set_xlabel("True omega_c")
+    #     ax.set_ylabel("Predicted omega_c")
+    #     ax.set_title("Omega_c: True vs Predicted")
+    #     ax.legend()
+    #     plt.tight_layout()
+    #     return fig
+
+    def create_param_scatter(self, param_idx: int, param_name: str) -> plt.Figure:
+        """Create scatterplot of true vs predicted for a selected parameter."""
         preds, targets = self.compute()
         fig, ax = plt.subplots(figsize=(6, 6))
-        ax.scatter(targets[:, 0].cpu(), preds[:, 0].cpu(), alpha=0.5, s=10)
+        ax.scatter(targets[:, param_idx].cpu(), preds[:, param_idx].cpu(), alpha=0.5, s=10)
 
         # Add diagonal line
         lims = [
@@ -59,9 +81,9 @@ class ScatterPlot(Metric):
         ax.set_xlim(lims)
         ax.set_ylim(lims)
 
-        ax.set_xlabel("True omega_c")
-        ax.set_ylabel("Predicted omega_c")
-        ax.set_title("Omega_c: True vs Predicted")
+        ax.set_xlabel(f"True {param_name}")
+        ax.set_ylabel(f"Predicted {param_name}")
+        ax.set_title(f"{param_name}: True vs Predicted")
         ax.legend()
         plt.tight_layout()
         return fig
