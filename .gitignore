@@ -12,3 +12,6 @@
 # results
 maps_to_cosmology/results*
 images_to_maps/results*
+
+# personal markdowns
+notes.md

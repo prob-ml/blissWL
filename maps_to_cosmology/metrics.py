@@ -65,3 +65,40 @@ class ScatterPlot(Metric):
         ax.legend()
         plt.tight_layout()
         return fig
+
+
+class PearsonCorrelationCoefficient(Metric):
+    """Compute Pearson Correlation for each cosmological parameter separately."""
+
+    def __init__(self, param_names: list[str], eps: float = 1e-8):
+        super().__init__()
+        self.param_names = param_names
+        self.eps = eps           # 1-22: avoid zero divison
+        N = len(param_names)
+        self.add_state("sum_x", default=torch.zeros(N), dist_reduce_fx="sum")
+        self.add_state("sum_y", default=torch.zeros(N), dist_reduce_fx="sum")
+        self.add_state("sum_x2", default=torch.zeros(N), dist_reduce_fx="sum")
+        self.add_state("sum_y2", default=torch.zeros(N), dist_reduce_fx="sum")
+        self.add_state("sum_xy", default=torch.zeros(N), dist_reduce_fx="sum")
+        self.add_state("total", default=torch.tensor(0), dist_reduce_fx="sum")
+
+    def update(self, preds: torch.Tensor, target: torch.Tensor) -> None:
+        """Update state with predictions and targets [B, num_params]."""
+        self.sum_x += preds.sum(dim=0)
+        self.sum_y += target.sum(dim=0)
+        self.sum_x2 += (preds ** 2).sum(dim=0)
+        self.sum_y2 += (target ** 2).sum(dim=0)
+        self.sum_xy += (preds * target).sum(dim=0)
+        self.total += preds.shape[0]
+
+    def compute(self) -> dict[str, torch.Tensor]:
+        """Compute per-parameter Pearson Correlation coefficient."""
+        n = self.total.to(self.sum_x.dtype)
+
+        num = n * self.sum_xy - self.sum_x * self.sum_y
+        den_x = n * self.sum_x2 - self.sum_x ** 2
+        den_y = n * self.sum_y2 - self.sum_y ** 2
+        denom = torch.sqrt(torch.clamp(den_x, min=0.0) * torch.clamp(den_y, min=0.0)) + self.eps   # eps
+        results = num / denom
+        return {name: results[i] for i, name in enumerate(self.param_names)}
+

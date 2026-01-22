@@ -2,7 +2,7 @@ import matplotlib.pyplot as plt
 import torch
 from lightning import LightningModule
 
-from maps_to_cosmology.metrics import RootMeanSquaredError, ScatterPlot
+from maps_to_cosmology.metrics import RootMeanSquaredError, ScatterPlot, PearsonCorrelationCoefficient
 from maps_to_cosmology.networks import TwoLayerMLP
 
 
@@ -31,8 +31,10 @@ class Encoder(LightningModule):
         # Metrics (separate instances for val/test)
         self.val_rmse = RootMeanSquaredError(self.param_names)
         self.val_scatter = ScatterPlot()
+        self.val_pcc = PearsonCorrelationCoefficient(self.param_names)
         self.test_rmse = RootMeanSquaredError(self.param_names)
         self.test_scatter = ScatterPlot()
+        self.test_pcc = PearsonCorrelationCoefficient(self.param_names)
 
         self.net = TwoLayerMLP(
             num_bins=num_bins,
@@ -83,6 +85,7 @@ class Encoder(LightningModule):
         # Update metrics
         self.val_rmse.update(loc, params)
         self.val_scatter.update(loc, params)
+        self.val_pcc.update(loc, params)
 
         loss = self.compute_loss(maps, params)
         self.log("val_loss", loss, prog_bar=True)
@@ -94,6 +97,10 @@ class Encoder(LightningModule):
         rmse = self.val_rmse.compute()
         for name, value in rmse.items():
             self.log(f"val_rmse_{name}", value)
+        # Log per-parameter PCC
+        pcc = self.val_pcc.compute()
+        for name, value in pcc.items():
+            self.log(f"val_pcc_{name}", value)
 
         # Log scatterplot
         fig = self.val_scatter.create_omega_c_scatter()
@@ -105,6 +112,7 @@ class Encoder(LightningModule):
         # Reset metrics
         self.val_rmse.reset()
         self.val_scatter.reset()
+        self.val_pcc.reset()
 
     def test_step(self, batch: tuple, batch_idx: int) -> torch.Tensor:
         maps, params = batch
@@ -114,6 +122,7 @@ class Encoder(LightningModule):
         # Update metrics
         self.test_rmse.update(loc, params)
         self.test_scatter.update(loc, params)
+        self.test_pcc.update(loc, params)
 
         loss = self.compute_loss(maps, params)
         self.log("test_loss", loss, prog_bar=True)
@@ -125,6 +134,10 @@ class Encoder(LightningModule):
         rmse = self.test_rmse.compute()
         for name, value in rmse.items():
             self.log(f"test_rmse_{name}", value)
+        # Log per-parameter PCC
+        pcc = self.test_pcc.compute()
+        for name, value in pcc.items():
+            self.log(f"test_pcc_{name}", value)
 
         # Log scatterplot
         fig = self.test_scatter.create_omega_c_scatter()
@@ -136,6 +149,7 @@ class Encoder(LightningModule):
         # Reset metrics
         self.test_rmse.reset()
         self.test_scatter.reset()
+        self.test_pcc.reset()
 
     def configure_optimizers(self):
         return torch.optim.Adam(self.parameters(), lr=self.lr)
