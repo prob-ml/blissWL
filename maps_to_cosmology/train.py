@@ -25,9 +25,13 @@ class SaveBestScatterplot(Callback):
 
         if val_loss < self.best_val_loss:
             self.best_val_loss = val_loss
-            fig = pl_module.val_scatter.create_omega_c_scatter()
-            fig.savefig(f"{self.dirpath}/best_omega_c_scatter.png", dpi=150)
-            plt.close(fig)
+            # fig = pl_module.val_scatter.create_omega_c_scatter()
+            # fig.savefig(f"{self.dirpath}/best_omega_c_scatter.png", dpi=150)
+            # plt.close(fig)
+            for i, name in enumerate(pl_module.param_names):
+                fig = pl_module.val_scatter.create_param_scatter(i, name)
+                fig.savefig(f"{self.dirpath}/best_scatter_{name}.png", dpi=150)
+                plt.close(fig)
 
 
 @hydra.main(version_base=None, config_path="configs", config_name="train_npe")

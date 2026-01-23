@@ -3,7 +3,7 @@ import torch
 from lightning import LightningModule
 
 from maps_to_cosmology.metrics import RootMeanSquaredError, ScatterPlot, PearsonCorrelationCoefficient
-from maps_to_cosmology.networks import TwoLayerMLP
+from maps_to_cosmology.networks import TwoLayerMLP, ResNet
 
 
 class Encoder(LightningModule):
@@ -36,12 +36,18 @@ class Encoder(LightningModule):
         self.test_scatter = ScatterPlot()
         self.test_pcc = PearsonCorrelationCoefficient(self.param_names)
 
-        self.net = TwoLayerMLP(
+        # self.net = TwoLayerMLP(
+        #     num_bins=num_bins,
+        #     map_slen=map_slen,
+        #     hidden_dim=hidden_dim,
+        #     output_dim=num_cosmo_params * 2,
+        # )
+        self.encoder = ResNet(
             num_bins=num_bins,
             map_slen=map_slen,
-            hidden_dim=hidden_dim,
             output_dim=num_cosmo_params * 2,
         )
+
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Forward pass.
@@ -52,7 +58,8 @@ class Encoder(LightningModule):
         Returns:
             Variational parameters [B, 12] with alternating loc/scale
         """
-        return self.net(x)
+        # return self.net(x)
+        return self.encoder(x)
 
     def compute_loss(self, x: torch.Tensor, params: torch.Tensor) -> torch.Tensor:
         """Compute negative log-likelihood loss.
