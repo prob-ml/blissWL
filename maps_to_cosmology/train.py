@@ -27,7 +27,7 @@ class SaveBestScatterplot(Callback):
             self.best_val_loss = val_loss
             for i, name in enumerate(pl_module.param_names):
                 fig = pl_module.val_scatter.create_param_scatter(i, name)
-                fig.savefig(f"{self.dirpath}/best_scatter_{name}.png", dpi=150)
+                fig.savefig(f"{self.dirpath}/best_val_scatter_{name}.png", dpi=150)
                 plt.close(fig)
 
 

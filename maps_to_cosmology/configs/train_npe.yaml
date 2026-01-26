@@ -27,7 +27,7 @@ encoder:
   var_dist:
     _target_: maps_to_cosmology.distributions.IndependentMVN
     num_params: ${encoder.num_cosmo_params}
-    low_clamp: -10
+    low_clamp: -14
     high_clamp: 10
 
 train:
