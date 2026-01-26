@@ -2,8 +2,12 @@ import matplotlib.pyplot as plt
 import torch
 from lightning import LightningModule
 
-from maps_to_cosmology.metrics import RootMeanSquaredError, ScatterPlot, PearsonCorrelationCoefficient
-from maps_to_cosmology.networks import TwoLayerMLP, ResNet
+from maps_to_cosmology.metrics import (
+    RootMeanSquaredError,
+    ScatterPlot,
+    PearsonCorrelationCoefficient,
+)
+from maps_to_cosmology.networks import ResNet
 
 
 class Encoder(LightningModule):
@@ -36,18 +40,11 @@ class Encoder(LightningModule):
         self.test_scatter = ScatterPlot()
         self.test_pcc = PearsonCorrelationCoefficient(self.param_names)
 
-        # self.net = TwoLayerMLP(
-        #     num_bins=num_bins,
-        #     map_slen=map_slen,
-        #     hidden_dim=hidden_dim,
-        #     output_dim=num_cosmo_params * 2,
-        # )
-        self.encoder = ResNet(
+        self.net = ResNet(
             num_bins=num_bins,
             map_slen=map_slen,
             output_dim=num_cosmo_params * 2,
         )
-
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Forward pass.
@@ -58,8 +55,7 @@ class Encoder(LightningModule):
         Returns:
             Variational parameters [B, 12] with alternating loc/scale
         """
-        # return self.net(x)
-        return self.encoder(x)
+        return self.net(x)
 
     def compute_loss(self, x: torch.Tensor, params: torch.Tensor) -> torch.Tensor:
         """Compute negative log-likelihood loss.
@@ -112,7 +108,9 @@ class Encoder(LightningModule):
         # Log scatterplot
         for i, name in enumerate(self.param_names):
             fig = self.val_scatter.create_param_scatter(i, name)
-            self.logger.experiment.add_figure(f"val_scatter/{name}", fig, self.current_epoch)
+            self.logger.experiment.add_figure(
+                f"val_scatter/{name}", fig, self.current_epoch
+            )
             plt.close(fig)
 
         # Reset metrics
@@ -148,7 +146,9 @@ class Encoder(LightningModule):
         # Log scatterplot
         for i, name in enumerate(self.param_names):
             fig = self.test_scatter.create_param_scatter(i, name)
-            self.logger.experiment.add_figure(f"test_scatter/{name}", fig, self.current_epoch)
+            self.logger.experiment.add_figure(
+                f"test_scatter/{name}", fig, self.current_epoch
+            )
             plt.close(fig)
 
         # Reset metrics

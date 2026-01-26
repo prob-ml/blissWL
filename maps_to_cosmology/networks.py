@@ -33,6 +33,7 @@ class TwoLayerMLP(nn.Module):
 
 class ResidualBlock(nn.Module):
     """Basic block for a ResNet."""
+
     def __init__(self, in_channels: int, out_channels: int, stride: int = 1):
         super().__init__()
         self.conv1 = nn.Conv2d(
@@ -50,25 +51,23 @@ class ResidualBlock(nn.Module):
                 nn.Conv2d(in_channels, out_channels, kernel_size=1, stride=stride),
                 nn.BatchNorm2d(out_channels),
             )
-    
 
     def forward(self, x):
         identity = x
         out = F.silu(self.bn1(self.conv1(x)))
         out = self.bn2(self.conv2(out))
         if self.skip is not None:
-            identity = self.skip(identity)      # identity shortcut
+            identity = self.skip(identity)  # identity shortcut
         out += identity
         return F.silu(out)
 
 
 class ResNet(nn.Module):
     """ResNet encoder for convergence maps."""
-    def __init__(self, 
-                 num_bins: int,
-                 map_slen: int,
-                 output_dim: int,
-                 base_channels: int = 32):
+
+    def __init__(
+        self, num_bins: int, map_slen: int, output_dim: int, base_channels: int = 32
+    ):
         super().__init__()
         self.stem = nn.Sequential(
             nn.Conv2d(num_bins, base_channels, kernel_size=3, padding=1),
@@ -82,7 +81,6 @@ class ResNet(nn.Module):
 
         self.global_pool = nn.AdaptiveAvgPool2d((1, 1))
         self.head = nn.Linear(base_channels * 4, output_dim)
-    
 
     def forward(self, x):
         x = self.stem(x)
