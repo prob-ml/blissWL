@@ -29,6 +29,7 @@ dependencies = [
     "treecorr>=5.1.2",
     "lsstdesc-gcr-catalogs>=1.10.1",
     "healpy>=1.19.0",
+    "anacal>=0.7.3",
 ]
 
 [dependency-groups]

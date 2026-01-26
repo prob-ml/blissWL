@@ -27,7 +27,7 @@ class SaveBestScatterplot(Callback):
             self.best_val_loss = val_loss
             for i, name in enumerate(pl_module.param_names):
                 fig = pl_module.val_scatter.create_param_scatter(i, name)
-                fig.savefig(f"{self.dirpath}/best_scatter_{name}.png", dpi=150)
+                fig.savefig(f"{self.dirpath}/best_val_scatter_{name}.png", dpi=150)
                 plt.close(fig)
 
 
@@ -53,6 +53,7 @@ def main(cfg: DictConfig) -> None:
         hidden_dim=cfg.encoder.hidden_dim,
         num_cosmo_params=cfg.encoder.num_cosmo_params,
         lr=cfg.encoder.lr,
+        var_dist_cfg=cfg.encoder.var_dist,
     )
 
     # Create logger
@@ -90,6 +91,9 @@ def main(cfg: DictConfig) -> None:
 
     print(f"\nBest model saved to: {checkpoint_callback.best_model_path}")
     print(f"Best val_loss: {checkpoint_callback.best_model_score:.4f}")
+
+    # Test using the best checkpoint from training
+    trainer.test(datamodule=datamodule, ckpt_path="best")
 
 
 if __name__ == "__main__":

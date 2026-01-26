@@ -1,6 +1,8 @@
 import matplotlib.pyplot as plt
 import torch
+from hydra.utils import instantiate
 from lightning import LightningModule
+from omegaconf import DictConfig
 
 from maps_to_cosmology.metrics import (
     RootMeanSquaredError,
@@ -25,14 +27,18 @@ class Encoder(LightningModule):
         hidden_dim: int,
         num_cosmo_params: int,
         lr: float,
+        var_dist_cfg: DictConfig,
     ):
         super().__init__()
         self.save_hyperparameters()
         self.lr = lr
         self.num_cosmo_params = num_cosmo_params
         self.param_names = ["omega_c", "omega_b", "sigma_8", "h_0", "n_s", "w_0"]
+        self.var_dist = instantiate(var_dist_cfg)
 
         # Metrics (separate instances for val/test)
+        self.train_rmse = RootMeanSquaredError(self.param_names)
+        self.train_pcc = PearsonCorrelationCoefficient(self.param_names)
         self.val_rmse = RootMeanSquaredError(self.param_names)
         self.val_scatter = ScatterPlot()
         self.val_pcc = PearsonCorrelationCoefficient(self.param_names)
@@ -68,14 +74,18 @@ class Encoder(LightningModule):
             Mean NLL loss
         """
         out = self.forward(x)  # [B, 12]
-        loc = out[:, 0::2]  # [B, 6]
-        scale = torch.clamp(out[:, 1::2], -10, 10).exp().sqrt()  # [B, 6]
-        dist = torch.distributions.Normal(loc, scale)
-        nll = -dist.log_prob(params).sum(dim=-1).mean()
+        nll = -self.var_dist.log_prob(out, params).mean()
         return nll
 
     def training_step(self, batch: tuple, batch_idx: int) -> torch.Tensor:
         maps, params = batch
+        out = self.forward(maps)
+        loc = out[:, 0::2]  # Posterior means [B, 6]
+
+        # Update metrics
+        self.train_rmse.update(loc, params)
+        self.train_pcc.update(loc, params)
+
         loss = self.compute_loss(maps, params)
         self.log("train_loss", loss, prog_bar=True)
         return loss
@@ -99,17 +109,17 @@ class Encoder(LightningModule):
         # Log per-parameter RMSE
         rmse = self.val_rmse.compute()
         for name, value in rmse.items():
-            self.log(f"val_rmse_{name}", value)
+            self.log(f"val/rmse/{name}", value)
         # Log per-parameter PCC
         pcc = self.val_pcc.compute()
         for name, value in pcc.items():
-            self.log(f"val_pcc_{name}", value)
+            self.log(f"val/pcc/{name}", value)
 
         # Log scatterplot
         for i, name in enumerate(self.param_names):
             fig = self.val_scatter.create_param_scatter(i, name)
             self.logger.experiment.add_figure(
-                f"val_scatter/{name}", fig, self.current_epoch
+                f"val/scatter/{name}", fig, self.current_epoch
             )
             plt.close(fig)
 
@@ -117,6 +127,18 @@ class Encoder(LightningModule):
         self.val_rmse.reset()
         self.val_scatter.reset()
         self.val_pcc.reset()
+
+    def on_train_epoch_end(self):
+        """Compute RMSE and PCC at end of training epoch."""
+        rmse = self.train_rmse.compute()
+        for name, value in rmse.items():
+            self.log(f"train/rmse/{name}", value)
+        pcc = self.train_pcc.compute()
+        for name, value in pcc.items():
+            self.log(f"train/pcc/{name}", value)
+
+        self.train_rmse.reset()
+        self.train_pcc.reset()
 
     def test_step(self, batch: tuple, batch_idx: int) -> torch.Tensor:
         maps, params = batch
@@ -137,17 +159,17 @@ class Encoder(LightningModule):
         # Log per-parameter RMSE
         rmse = self.test_rmse.compute()
         for name, value in rmse.items():
-            self.log(f"test_rmse_{name}", value)
+            self.log(f"test/rmse/{name}", value)
         # Log per-parameter PCC
         pcc = self.test_pcc.compute()
         for name, value in pcc.items():
-            self.log(f"test_pcc_{name}", value)
+            self.log(f"test/pcc/{name}", value)
 
         # Log scatterplot
         for i, name in enumerate(self.param_names):
             fig = self.test_scatter.create_param_scatter(i, name)
             self.logger.experiment.add_figure(
-                f"test_scatter/{name}", fig, self.current_epoch
+                f"test/scatter/{name}", fig, self.current_epoch
             )
             plt.close(fig)
 
