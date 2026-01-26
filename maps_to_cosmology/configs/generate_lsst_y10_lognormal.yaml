@@ -9,6 +9,7 @@ hydra:
 output_dir: /data/scratch/convergence_maps/lsst_y10_lognormal
 num_maps: 100000
 seed: 42
+combine_only: false  # If true, skip generation and just combine existing batch files
 batch_size: 16  # Number of maps to generate in parallel (adjust for GPU memory)
 
 N: 256        # Resolution (256x256 tiles)
