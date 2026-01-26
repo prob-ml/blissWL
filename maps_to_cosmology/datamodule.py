@@ -71,35 +71,45 @@ class ConvergenceMapsModule(LightningDataModule):
         if self.train_dataset is not None:
             return  # Already set up
 
-        # Find all batch files
-        pt_files = sorted(self.data_dir.glob("batch_*.pt"))
-        if not pt_files:
-            raise FileNotFoundError(f"No batch_*.pt files found in {self.data_dir}")
-
-        # Load files in parallel
-        def load_file(filepath):
-            batch = torch.load(filepath, weights_only=True)
-            return batch["maps"], batch["params"]
-
-        all_maps = []
-        all_params = []
-
-        with ThreadPoolExecutor(max_workers=8) as executor:
-            results = list(
-                tqdm(
-                    executor.map(load_file, pt_files),
-                    total=len(pt_files),
-                    desc="Loading data",
+        # Check for combined file first (fast path)
+        combined_path = self.data_dir / "combined_batches.pt"
+        if combined_path.exists():
+            print(f"Loading combined_batches.pt from {self.data_dir}")
+            data = torch.load(combined_path, weights_only=True)
+            all_maps = data["maps"]
+            all_params = data["params"]
+        else:
+            # Fall back to loading individual batch files (slow path)
+            pt_files = sorted(self.data_dir.glob("batch_*.pt"))
+            if not pt_files:
+                raise FileNotFoundError(
+                    f"No combined_batches.pt or batch_*.pt files found in {self.data_dir}"
                 )
-            )
 
-        for maps, params in results:
-            all_maps.append(maps)
-            all_params.append(params)
+            # Load files in parallel
+            def load_file(filepath):
+                batch = torch.load(filepath, weights_only=True)
+                return batch["maps"], batch["params"]
 
-        # Concatenate all batches
-        all_maps = torch.cat(all_maps, dim=0)
-        all_params = torch.cat(all_params, dim=0)
+            all_maps_list = []
+            all_params_list = []
+
+            with ThreadPoolExecutor(max_workers=8) as executor:
+                results = list(
+                    tqdm(
+                        executor.map(load_file, pt_files),
+                        total=len(pt_files),
+                        desc="Loading data",
+                    )
+                )
+
+            for maps, params in results:
+                all_maps_list.append(maps)
+                all_params_list.append(params)
+
+            # Concatenate all batches
+            all_maps = torch.cat(all_maps_list, dim=0)
+            all_params = torch.cat(all_params_list, dim=0)
 
         print(f"Loaded {len(all_maps)} samples")
         print(f"Maps shape: {all_maps.shape}")

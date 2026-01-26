@@ -30,6 +30,61 @@ from sbi_lens.simulator.LogNormal_field import lensingLogNormal
 from maps_to_cosmology.prior import LambdaCDMPrior
 
 
+def combine_batches(output_dir: Path) -> None:
+    """Combine all batch files into a single combined_batches.pt file.
+
+    Uses pre-allocation to avoid OOM when combining large datasets.
+
+    Args:
+        output_dir: Directory containing batch_*.pt files
+    """
+    batch_files = sorted(output_dir.glob("batch_*.pt"))
+    if not batch_files:
+        print(f"No batch_*.pt files found in {output_dir}")
+        return
+
+    print(f"\nCombining {len(batch_files)} batch files...")
+
+    # Load first batch to get shapes and dtypes
+    first_batch = torch.load(batch_files[0], weights_only=True)
+    batch_size = first_batch["maps"].shape[0]
+    map_shape = first_batch["maps"].shape[1:]
+    param_shape = first_batch["params"].shape[1:]
+    maps_dtype = first_batch["maps"].dtype
+    params_dtype = first_batch["params"].dtype
+
+    # Pre-allocate tensors
+    total_samples = len(batch_files) * batch_size
+    print(f"Pre-allocating for {total_samples} samples...")
+    combined_maps = torch.empty((total_samples, *map_shape), dtype=maps_dtype)
+    combined_params = torch.empty((total_samples, *param_shape), dtype=params_dtype)
+
+    # Fill in data batch by batch
+    combined_maps[:batch_size] = first_batch["maps"]
+    combined_params[:batch_size] = first_batch["params"]
+    del first_batch
+
+    for i, batch_path in enumerate(
+        tqdm(batch_files[1:], desc="Loading batches"), start=1
+    ):
+        batch = torch.load(batch_path, weights_only=True)
+        start_idx = i * batch_size
+        end_idx = start_idx + batch_size
+        combined_maps[start_idx:end_idx] = batch["maps"]
+        combined_params[start_idx:end_idx] = batch["params"]
+        del batch
+
+    print(f"Combined maps shape: {combined_maps.shape}")
+    print(f"Combined params shape: {combined_params.shape}")
+
+    # Save combined file
+    combined_path = output_dir / "combined_batches.pt"
+    torch.save({"maps": combined_maps, "params": combined_params}, combined_path)
+
+    combined_size_mb = combined_path.stat().st_size / (1024 * 1024)
+    print(f"Saved combined_batches.pt ({combined_size_mb:.1f} MB)")
+
+
 def sample_single(model, key, params_dict):
     """Sample a single convergence map with fixed cosmological parameters.
 
@@ -68,6 +123,15 @@ def create_batched_sampler(model, param_names):
 )
 def main(cfg: DictConfig) -> None:
     """Main function for generating convergence maps."""
+    output_dir = Path(cfg.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Handle combine_only mode
+    if cfg.get("combine_only", False):
+        print("Combine-only mode: skipping generation, combining existing batches")
+        combine_batches(output_dir)
+        return
+
     # Print device info
     devices = jax.devices()
     print(f"JAX devices: {devices}")
@@ -79,10 +143,6 @@ def main(cfg: DictConfig) -> None:
     print(f"Map resolution: {cfg.N}x{cfg.N}")
     print(f"Redshift bins: {cfg.nbins}")
     print(f"Batch size: {cfg.batch_size}")
-
-    # Create output directory
-    output_dir = Path(cfg.output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
 
     # Create prior and save parameter names
     prior = LambdaCDMPrior(cfg.prior)
@@ -186,6 +246,9 @@ def main(cfg: DictConfig) -> None:
     print(f"  - batch_00000.pt ... batch_{total_batches - 1:05d}.pt")
     print(f"  - Total maps: {total_maps} ({maps_size_mb:.1f} MB)")
     print(f"  - param_names.txt: {prior.param_names}")
+
+    # Combine all batches into a single file for fast loading
+    combine_batches(output_dir)
 
 
 if __name__ == "__main__":
