@@ -34,6 +34,7 @@ class Encoder(LightningModule):
         self.lr = lr
         self.num_cosmo_params = num_cosmo_params
         self.param_names = ["omega_c", "omega_b", "sigma_8", "h_0", "n_s", "w_0"]
+        self.var_dist = instantiate(var_dist_cfg)
 
         # Metrics (separate instances for val/test)
         self.val_rmse = RootMeanSquaredError(self.param_names)
