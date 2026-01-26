@@ -92,6 +92,9 @@ def main(cfg: DictConfig) -> None:
     print(f"\nBest model saved to: {checkpoint_callback.best_model_path}")
     print(f"Best val_loss: {checkpoint_callback.best_model_score:.4f}")
 
+    # Test using the best checkpoint from training
+    trainer.test(datamodule=datamodule, ckpt_path="best")
+
 
 if __name__ == "__main__":
     main()
