@@ -2,8 +2,8 @@ import matplotlib.pyplot as plt
 import torch
 from lightning import LightningModule
 
-from maps_to_cosmology.metrics import RootMeanSquaredError, ScatterPlot
-from maps_to_cosmology.networks import TwoLayerMLP
+from maps_to_cosmology.metrics import RootMeanSquaredError, PearsonCorrelationCoefficient, ScatterPlot
+from maps_to_cosmology.networks import ResNet
 
 
 class Encoder(LightningModule):
@@ -30,14 +30,15 @@ class Encoder(LightningModule):
 
         # Metrics (separate instances for val/test)
         self.val_rmse = RootMeanSquaredError(self.param_names)
+        self.val_corr = PearsonCorrelationCoefficient(self.param_names)
         self.val_scatter = ScatterPlot()
         self.test_rmse = RootMeanSquaredError(self.param_names)
+        self.test_corr = PearsonCorrelationCoefficient(self.param_names)
         self.test_scatter = ScatterPlot()
 
-        self.net = TwoLayerMLP(
+        self.net = ResNet(
             num_bins=num_bins,
             map_slen=map_slen,
-            hidden_dim=hidden_dim,
             output_dim=num_cosmo_params * 2,
         )
 
@@ -50,6 +51,9 @@ class Encoder(LightningModule):
         Returns:
             Variational parameters [B, 12] with alternating loc/scale
         """
+        if x.ndim == 4 and x.shape[1] != self.hparams.num_bins and x.shape[-1] == self.hparams.num_bins:
+            x = x.permute(0, 3, 1, 2).contiguous()
+
         return self.net(x)
 
     def compute_loss(self, x: torch.Tensor, params: torch.Tensor) -> torch.Tensor:
@@ -82,6 +86,7 @@ class Encoder(LightningModule):
 
         # Update metrics
         self.val_rmse.update(loc, params)
+        self.val_corr.update(loc, params)
         self.val_scatter.update(loc, params)
 
         loss = self.compute_loss(maps, params)
@@ -94,16 +99,22 @@ class Encoder(LightningModule):
         rmse = self.val_rmse.compute()
         for name, value in rmse.items():
             self.log(f"val_rmse_{name}", value)
+        
+        # Log per-parameter Pearson r
+        corr = self.val_corr.compute()
+        for name, value in corr.items():
+            self.log(f"val_corr_{name}", value)
 
-        # Log scatterplot
-        fig = self.val_scatter.create_omega_c_scatter()
+        # Log scatterplot for all parameters
+        fig = self.val_scatter.create_scatterplots(self.param_names)
         self.logger.experiment.add_figure(
-            "val_omega_c_scatter", fig, self.current_epoch
+            "val_scatter_all_params", fig, self.current_epoch
         )
         plt.close(fig)
 
         # Reset metrics
         self.val_rmse.reset()
+        self.val_corr.reset()
         self.val_scatter.reset()
 
     def test_step(self, batch: tuple, batch_idx: int) -> torch.Tensor:
@@ -113,6 +124,7 @@ class Encoder(LightningModule):
 
         # Update metrics
         self.test_rmse.update(loc, params)
+        self.test_corr.update(loc, params)
         self.test_scatter.update(loc, params)
 
         loss = self.compute_loss(maps, params)
@@ -126,15 +138,21 @@ class Encoder(LightningModule):
         for name, value in rmse.items():
             self.log(f"test_rmse_{name}", value)
 
+        # Log per-parameter Pearson r
+        corr = self.test_corr.compute()
+        for name, value in corr.items():
+            self.log(f"test_corr_{name}", value)
+
         # Log scatterplot
-        fig = self.test_scatter.create_omega_c_scatter()
+        fig = self.test_scatter.create_scatterplots(self.param_names)
         self.logger.experiment.add_figure(
-            "test_omega_c_scatter", fig, self.current_epoch
+            "test_scatter_all_params", fig, self.current_epoch
         )
         plt.close(fig)
 
         # Reset metrics
         self.test_rmse.reset()
+        self.test_corr.reset()
         self.test_scatter.reset()
 
     def configure_optimizers(self):
