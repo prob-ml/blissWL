@@ -36,7 +36,11 @@ def main():
     # Initialize hydra config
     with initialize(config_path="../", version_base=None):
         hydra_cfg = compose(
-            "config_train_npe", overrides=[f"train.pretrained_weights={cfg['ckpt']}"]
+            "config_train_npe",
+            overrides=[
+                f"train.pretrained_weights={cfg['ckpt']}",
+                f"paths.cached_data={cfg['cached_data_path']}",
+            ],
         )
 
     L.seed_everything(hydra_cfg.train.seed)

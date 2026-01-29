@@ -1,6 +1,9 @@
 # Path to trained model checkpoint
 ckpt: /nfs/turbo/lsa-regier/scratch/descwl/checkpoints/trained_encoder_descwl_setting1.ckpt
 
+# Path to cached test data
+cached_data_path: /nfs/turbo/lsa-regier/scratch/descwl/setting1
+
 # Output file path
 output: npe_credible_intervals_setting1.pt
 
