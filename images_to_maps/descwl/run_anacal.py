@@ -66,7 +66,7 @@ def combine_multiband_images(
     if method == "inverse_variance":
         if band_variances is not None:
             weights = []
-            band_names = ["g", "r", "i", "z"][: images_tensor.shape[0]]
+            band_names = list(band_variances.keys())  # Use actual band names from data
             for band in band_names:
                 variance_value = band_variances.get(band, 0.354)
                 weights.append(1.0 / variance_value)
