@@ -1,6 +1,7 @@
 # AnaCal configuration for descwl
-# Uses NPE's test set via config_train_npe.yaml (same seed for identical split)
+# Uses NPE's test set (same seed for identical split)
 
+cached_data_path: /nfs/turbo/lsa-regier/scratch/descwl/setting1
 output_file: results/anacal_results_setting1.pt
 n_workers: 28  # Number of parallel workers (1 = sequential)
 
