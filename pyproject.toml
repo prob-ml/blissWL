@@ -30,7 +30,6 @@ dependencies = [
     "lsstdesc-gcr-catalogs>=1.10.1",
     "healpy>=1.19.0",
     "anacal>=0.7.3",
-    "descwl-shear-sims",
 ]
 
 [dependency-groups]
@@ -50,7 +49,4 @@ allow-direct-references = true
 
 [tool.hatch.build.targets.wheel]
 packages = ["images_to_maps", "maps_to_cosmology"]
-
-[tool.uv.sources]
-descwl-shear-sims = { git = "https://github.com/LSSTDESC/descwl-shear-sims.git" }
 
