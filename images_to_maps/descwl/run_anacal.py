@@ -9,6 +9,8 @@ Usage:
 Configure settings in config_run_anacal.yaml
 """
 
+import os
+import re
 import time
 from concurrent.futures import ProcessPoolExecutor
 from datetime import datetime
@@ -22,8 +24,12 @@ import torch
 from hydra import compose, initialize
 from hydra.core.global_hydra import GlobalHydra
 from hydra.utils import instantiate
+from numpy.random import SeedSequence
 from omegaconf import DictConfig
 from tqdm import tqdm
+
+from descwl_shear_sims.psfs import make_ps_psf
+from descwl_shear_sims.sim import get_se_dim
 
 
 # =============================================================================
@@ -52,6 +58,60 @@ class GalSimPsfWrapper(anacal.psf.BasePsf):
         return psf_at_pos.drawImage(
             nx=self.npix, ny=self.npix, scale=self.pixel_scale, method="auto"
         ).array.astype(np.float64)
+
+
+# =============================================================================
+# PSF Reconstruction Functions
+# =============================================================================
+
+
+def reconstruct_variable_psf(file_path, setting_config):
+    """
+    Reconstruct variable PSF from filename for backward compatibility.
+
+    Parameters
+    ----------
+    file_path : str
+        Path to data file (e.g., "dataset_123_size_1.pt")
+    setting_config : dict
+        Config with keys: seed, num_images, variation_factor, coadd_dim, rotate, pixel_scale, npix
+
+    Returns
+    -------
+    GalSimPsfWrapper with is_variable=True
+    """
+    # Parse image index from filename
+    match = re.search(r"dataset_(\d+)_size", os.path.basename(file_path))
+    if not match:
+        raise ValueError(f"Cannot parse index from filename: {file_path}")
+    global_idx = int(match.group(1))
+
+    # Reconstruct the same seed sequence used during generation
+    ss = SeedSequence(setting_config["seed"])
+    child_seeds = ss.spawn(setting_config["num_images"])
+    child_seed = int(child_seeds[global_idx].generate_state(1)[0])
+    psf_seed = (child_seed + 1000000) % (2**32)
+
+    # Compute se_dim
+    se_dim = get_se_dim(
+        coadd_dim=setting_config["coadd_dim"],
+        rotate=setting_config.get("rotate", False),
+    )
+
+    # Reconstruct PSF
+    rng = np.random.RandomState(psf_seed)
+    psf_obj = make_ps_psf(
+        rng=rng,
+        dim=se_dim,
+        variation_factor=setting_config.get("variation_factor", 1.0),
+    )
+
+    return GalSimPsfWrapper(
+        psf_obj,
+        pixel_scale=setting_config.get("pixel_scale", 0.2),
+        npix=setting_config.get("npix", 64),
+        is_variable=True,
+    )
 
 
 # =============================================================================
@@ -191,21 +251,27 @@ def anacal_multiband_combined(
 # =============================================================================
 
 
-def process_sample(sample, config):
+def process_sample(sample, config, file_path=None):
     """Process a single sample with AnaCal."""
     images = sample["images"]
     catalog = sample["tile_catalog"]
     anacal_data = sample["anacal_data"]
 
-    psf_image = anacal_data["psf_image"]
     masks_dict = anacal_data["masks"]
     band_variances = anacal_data["variances"]
     bright_star_catalog = anacal_data.get("bright_star_catalog")
     pixel_scale = anacal_data.get("pixel_scale", config["pixel_scale"])
 
+    # Determine PSF: reconstruct variable PSF if setting_config provided
+    setting_config = config.get("setting_config")
+    if setting_config and setting_config.get("variable_psf", False) and file_path:
+        psf_input = reconstruct_variable_psf(file_path, setting_config)
+    else:
+        psf_input = anacal_data["psf_image"]
+
     e1_sum, e1g1_sum, e2_sum, e2g2_sum, num_detections = anacal_multiband_combined(
         images,
-        psf_image,
+        psf_input,
         masks_dict=masks_dict,
         combine_method=config["combine_method"],
         mask_combine_method=config["mask_combine_method"],
@@ -235,7 +301,7 @@ def process_file(args):
         data_list = torch.load(file_path, weights_only=False)
         results = []
         for sample in data_list:
-            results.append(process_sample(sample, config))
+            results.append(process_sample(sample, config, file_path))
         return results, None
     except Exception as e:
         return None, str(e)
