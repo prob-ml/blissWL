@@ -9,19 +9,20 @@ Usage:
 Configure settings in config_run_anacal.yaml
 """
 
-import os
 import time
 from concurrent.futures import ProcessPoolExecutor
 from datetime import datetime
 
 import anacal
 import galsim
+import hydra
 import numpy as np
 import lightning as L
 import torch
-import yaml
 from hydra import compose, initialize
+from hydra.core.global_hydra import GlobalHydra
 from hydra.utils import instantiate
+from omegaconf import DictConfig
 from tqdm import tqdm
 
 
@@ -240,26 +241,22 @@ def process_file(args):
         return None, str(e)
 
 
-def load_config():
-    """Load anacal config from YAML file."""
-    config_path = os.path.join(
-        os.path.dirname(os.path.abspath(__file__)), "config_run_anacal.yaml"
-    )
-    with open(config_path, encoding="utf-8") as f:
-        return yaml.safe_load(f)
-
-
-def main():
+@hydra.main(version_base=None, config_path=".", config_name="config_run_anacal")
+def main(cfg: DictConfig) -> None:
     print("=== ANACAL PROCESSING ===")
     print(f"Start time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
-    # Load anacal-specific config
-    cfg = load_config()
-    print(f"Output: {cfg['output_file']}")
+    print(f"Output: {cfg.output_file}")
 
-    # Use NPE's hydra config for data source
-    with initialize(config_path="./", version_base=None):
-        hydra_cfg = compose("config_train_npe")
+    # Clear global hydra to allow re-initialization for loading training config
+    GlobalHydra.instance().clear()
+
+    # Use NPE's hydra config for data source with cached_data_path override
+    with initialize(config_path=".", version_base=None):
+        hydra_cfg = compose(
+            "config_train_npe",
+            overrides=[f"paths.cached_data={cfg.cached_data_path}"],
+        )
 
     # Same seed as NPE for identical test set
     L.seed_everything(hydra_cfg.train.seed)
@@ -286,6 +283,7 @@ def main():
     start_time = time.time()
     failed_count = 0
     n_workers = cfg.get("n_workers", 1)
+    cfg_dict = dict(cfg)  # Convert to dict for passing to workers
 
     def append_results(file_results):
         for r in file_results:
@@ -299,7 +297,7 @@ def main():
 
     if n_workers > 1:
         print(f"Using {n_workers} workers...")
-        args_list = [(f, cfg) for f in test_files]
+        args_list = [(f, cfg_dict) for f in test_files]
         with ProcessPoolExecutor(max_workers=n_workers) as executor:
             # Use map() to preserve order (as_completed returns in completion order)
             for file_results, error in tqdm(
@@ -314,7 +312,7 @@ def main():
                     append_results(file_results)
     else:
         for file_path in tqdm(test_files, desc="Processing"):
-            file_results, error = process_file((file_path, cfg))
+            file_results, error = process_file((file_path, cfg_dict))
             if error:
                 print(f"Error processing {file_path}: {error}")
                 failed_count += 1
@@ -341,8 +339,8 @@ def main():
         "seed": hydra_cfg.train.seed,
     }
 
-    torch.save(output, cfg["output_file"])
-    print(f"\nSaved to: {cfg['output_file']}")
+    torch.save(output, cfg.output_file)
+    print(f"\nSaved to: {cfg.output_file}")
 
     # Summary
     print("\n=== COMPLETE ===")
