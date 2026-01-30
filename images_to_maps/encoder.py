@@ -199,22 +199,24 @@ class MassMapEncoder(L.LightningModule):
             self.report_metrics(self.sample_metrics, "val/sample")
             self.sample_metrics.reset()
 
-        avg_epoch_val_loss = (
-            self.current_epoch_val_loss / self.current_epoch_val_batches
-        )
-        self.epoch_val_losses.append(avg_epoch_val_loss)
+        if self.current_epoch_val_batches > 0:
+            avg_epoch_val_loss = (
+                self.current_epoch_val_loss / self.current_epoch_val_batches
+            )
+            self.epoch_val_losses.append(avg_epoch_val_loss)
+            print(
+                f"Average val loss for epoch {self.current_epoch}: {avg_epoch_val_loss}",
+            )
+
+            # Only save plots if this is the best val loss so far
+            if self.sample_image_renders is not None:
+                if avg_epoch_val_loss < self.best_val_loss:
+                    self.best_val_loss = avg_epoch_val_loss
+                    self.report_metrics(self.sample_image_renders, "val/image_renders")
+                self.sample_image_renders.reset()
+
         self.current_epoch_val_loss = 0.0
         self.current_epoch_val_batches = 0
-        print(
-            f"Average val loss for epoch {self.current_epoch}: {avg_epoch_val_loss}",
-        )
-
-        # Only save plots if this is the best val loss so far
-        if self.sample_image_renders is not None:
-            if avg_epoch_val_loss < self.best_val_loss:
-                self.best_val_loss = avg_epoch_val_loss
-                self.report_metrics(self.sample_image_renders, "val/image_renders")
-            self.sample_image_renders.reset()
 
     def on_test_epoch_end(self):
         self.report_metrics(self.mode_metrics, "test/mode")
@@ -417,22 +419,24 @@ class ScalarShearEncoder(L.LightningModule):
             self.report_metrics(self.sample_metrics, "val/sample")
             self.sample_metrics.reset()
 
-        avg_epoch_val_loss = (
-            self.current_epoch_val_loss / self.current_epoch_val_batches
-        )
-        self.epoch_val_losses.append(avg_epoch_val_loss)
+        if self.current_epoch_val_batches > 0:
+            avg_epoch_val_loss = (
+                self.current_epoch_val_loss / self.current_epoch_val_batches
+            )
+            self.epoch_val_losses.append(avg_epoch_val_loss)
+            print(
+                f"Average val loss for epoch {self.current_epoch}: {avg_epoch_val_loss}",
+            )
+
+            # Only save plots if this is the best val loss so far
+            if self.sample_image_renders is not None:
+                if avg_epoch_val_loss < self.best_val_loss:
+                    self.best_val_loss = avg_epoch_val_loss
+                    self.report_metrics(self.sample_image_renders, "val/image_renders")
+                self.sample_image_renders.reset()
+
         self.current_epoch_val_loss = 0.0
         self.current_epoch_val_batches = 0
-        print(
-            f"Average val loss for epoch {self.current_epoch}: {avg_epoch_val_loss}",
-        )
-
-        # Only save plots if this is the best val loss so far
-        if self.sample_image_renders is not None:
-            if avg_epoch_val_loss < self.best_val_loss:
-                self.best_val_loss = avg_epoch_val_loss
-                self.report_metrics(self.sample_image_renders, "val/image_renders")
-            self.sample_image_renders.reset()
 
     def on_test_epoch_end(self):
         self.report_metrics(self.mode_metrics, "test/mode")
