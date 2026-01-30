@@ -33,7 +33,7 @@ from maps_to_cosmology.prior import LambdaCDMPrior
 def combine_batches(output_dir: Path) -> None:
     """Combine all batch files into a single combined_batches.pt file.
 
-    Uses pre-allocation to avoid OOM when combining large datasets.
+    Handles variable batch sizes (due to NaN filtering).
 
     Args:
         output_dir: Directory containing batch_*.pt files
@@ -45,33 +45,33 @@ def combine_batches(output_dir: Path) -> None:
 
     print(f"\nCombining {len(batch_files)} batch files...")
 
-    # Load first batch to get shapes and dtypes
-    first_batch = torch.load(batch_files[0], weights_only=True)
-    batch_size = first_batch["maps"].shape[0]
-    map_shape = first_batch["maps"].shape[1:]
-    param_shape = first_batch["params"].shape[1:]
-    maps_dtype = first_batch["maps"].dtype
-    params_dtype = first_batch["params"].dtype
+    # First pass: count total samples (batches may have different sizes due to NaN filtering)
+    total_samples = 0
+    for batch_path in tqdm(batch_files, desc="Counting samples"):
+        batch = torch.load(batch_path, weights_only=True)
+        total_samples += batch["maps"].shape[0]
+        # Get shapes and dtypes from first batch
+        if batch_path == batch_files[0]:
+            map_shape = batch["maps"].shape[1:]
+            param_shape = batch["params"].shape[1:]
+            maps_dtype = batch["maps"].dtype
+            params_dtype = batch["params"].dtype
+        del batch
+
+    print(f"Total samples across all batches: {total_samples}")
 
     # Pre-allocate tensors
-    total_samples = len(batch_files) * batch_size
-    print(f"Pre-allocating for {total_samples} samples...")
     combined_maps = torch.empty((total_samples, *map_shape), dtype=maps_dtype)
     combined_params = torch.empty((total_samples, *param_shape), dtype=params_dtype)
 
-    # Fill in data batch by batch
-    combined_maps[:batch_size] = first_batch["maps"]
-    combined_params[:batch_size] = first_batch["params"]
-    del first_batch
-
-    for i, batch_path in enumerate(
-        tqdm(batch_files[1:], desc="Loading batches"), start=1
-    ):
+    # Second pass: fill in data
+    current_idx = 0
+    for batch_path in tqdm(batch_files, desc="Loading batches"):
         batch = torch.load(batch_path, weights_only=True)
-        start_idx = i * batch_size
-        end_idx = start_idx + batch_size
-        combined_maps[start_idx:end_idx] = batch["maps"]
-        combined_params[start_idx:end_idx] = batch["params"]
+        batch_size = batch["maps"].shape[0]
+        combined_maps[current_idx : current_idx + batch_size] = batch["maps"]
+        combined_params[current_idx : current_idx + batch_size] = batch["params"]
+        current_idx += batch_size
         del batch
 
     print(f"Combined maps shape: {combined_maps.shape}")
@@ -199,6 +199,7 @@ def main(cfg: DictConfig) -> None:
     if start_batch == 0:
         print("(First batch includes JIT compilation and will be slower)")
     start_time = time.time()
+    total_dropped = 0
 
     for batch_idx in tqdm(range(start_batch, num_batches), desc="Generating batches"):
         # Sample cosmological parameters from prior
@@ -220,31 +221,51 @@ def main(cfg: DictConfig) -> None:
             [params_batch[name] for name in prior.param_names], axis=1
         )
 
+        # Convert to numpy for NaN checking
+        maps_np = np.array(maps_batch)
+        params_np = np.array(params_array)
+
+        # Filter out samples with NaN values in maps or params
+        maps_has_nan = np.isnan(maps_np).any(axis=(1, 2, 3))
+        params_has_nan = np.isnan(params_np).any(axis=1)
+        valid_mask = ~(maps_has_nan | params_has_nan)
+
+        num_dropped = (~valid_mask).sum()
+        if num_dropped > 0:
+            total_dropped += num_dropped
+            maps_np = maps_np[valid_mask]
+            params_np = params_np[valid_mask]
+
+        # Skip saving if all samples were dropped
+        if len(maps_np) == 0:
+            continue
+
         # Convert to torch tensors and save
         batch_data = {
-            "maps": torch.from_numpy(np.array(maps_batch)),
-            "params": torch.from_numpy(np.array(params_array)),
+            "maps": torch.from_numpy(maps_np),
+            "params": torch.from_numpy(params_np),
         }
         batch_path = output_dir / f"batch_{batch_idx:05d}.pt"
         torch.save(batch_data, batch_path)
 
     elapsed_time = time.time() - start_time
-    maps_generated = remaining_batches * cfg.batch_size
+    maps_attempted = remaining_batches * cfg.batch_size
+    maps_generated = maps_attempted - total_dropped
     time_per_map = elapsed_time / maps_generated if maps_generated > 0 else 0
 
     print("\nGeneration complete!")
     print(f"Total time: {elapsed_time:.2f}s")
     print(f"Time per map: {time_per_map:.3f}s")
     print(f"Maps per second: {maps_generated / elapsed_time:.2f}")
+    if total_dropped > 0:
+        print(
+            f"Dropped {total_dropped} samples with NaN values ({100 * total_dropped / maps_attempted:.2f}%)"
+        )
 
-    # Summary
+    # Summary - count actual samples in batch files (may vary due to NaN filtering)
     total_batches = len(list(output_dir.glob("batch_*.pt")))
-    total_maps = total_batches * cfg.batch_size
-    maps_size_mb = total_maps * cfg.N * cfg.N * cfg.nbins * 4 / (1024 * 1024)
-
     print(f"\nSaved {total_batches} batch files to {output_dir}")
     print(f"  - batch_00000.pt ... batch_{total_batches - 1:05d}.pt")
-    print(f"  - Total maps: {total_maps} ({maps_size_mb:.1f} MB)")
     print(f"  - param_names.txt: {prior.param_names}")
 
     # Combine all batches into a single file for fast loading
