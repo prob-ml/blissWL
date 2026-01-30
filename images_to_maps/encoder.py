@@ -180,16 +180,17 @@ class MassMapEncoder(L.LightningModule):
 
     def on_train_epoch_end(self):
         # Compute the average loss for the epoch and reset counters
-        avg_epoch_train_loss = (
-            self.current_epoch_train_loss / self.current_epoch_train_batches
-        )
-        self.epoch_train_losses.append(avg_epoch_train_loss)
+        if self.current_epoch_train_batches > 0:
+            avg_epoch_train_loss = (
+                self.current_epoch_train_loss / self.current_epoch_train_batches
+            )
+            self.epoch_train_losses.append(avg_epoch_train_loss)
+            print(
+                f"Average train loss for epoch {self.current_epoch}: {avg_epoch_train_loss}",
+            )
         self.current_epoch_train_loss = 0.0
         self.current_epoch_train_batches = 0
         self.current_epochs += 1
-        print(
-            f"Average train loss for epoch {self.current_epoch}: {avg_epoch_train_loss}",
-        )
 
     def on_validation_epoch_end(self):
         self.report_metrics(self.mode_metrics, "val/mode")
@@ -397,16 +398,17 @@ class ScalarShearEncoder(L.LightningModule):
         self.update_metrics(batch, batch_idx)
 
     def on_train_epoch_end(self):
-        avg_epoch_train_loss = (
-            self.current_epoch_train_loss / self.current_epoch_train_batches
-        )
-        self.epoch_train_losses.append(avg_epoch_train_loss)
+        if self.current_epoch_train_batches > 0:
+            avg_epoch_train_loss = (
+                self.current_epoch_train_loss / self.current_epoch_train_batches
+            )
+            self.epoch_train_losses.append(avg_epoch_train_loss)
+            print(
+                f"Average train loss for epoch {self.current_epoch}: {avg_epoch_train_loss}",
+            )
         self.current_epoch_train_loss = 0.0
         self.current_epoch_train_batches = 0
         self.current_epochs += 1
-        print(
-            f"Average train loss for epoch {self.current_epoch}: {avg_epoch_train_loss}",
-        )
 
     def on_validation_epoch_end(self):
         self.report_metrics(self.mode_metrics, "val/mode")
