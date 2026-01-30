@@ -4,6 +4,7 @@ Usage:
     python -m images_to_maps.descwl.train
 """
 
+import torch
 import hydra
 from hydra.utils import instantiate
 from lightning import seed_everything
@@ -20,11 +21,18 @@ def main(cfg: DictConfig) -> None:
     encoder = instantiate(cfg.train.encoder)
     callbacks = list(instantiate(cfg.train.callbacks).values())
 
+    # Load pretrained weights if specified
+    if cfg.train.pretrained_weights is not None:
+        print(f"Loading pretrained weights from: {cfg.train.pretrained_weights}")
+        checkpoint = torch.load(cfg.train.pretrained_weights, map_location="cpu")
+        state_dict = checkpoint.get("state_dict", checkpoint)
+        encoder.load_state_dict(state_dict, strict=True)
+
     # Create trainer
     trainer = instantiate(cfg.train.trainer, callbacks=callbacks)
 
-    # Train
-    trainer.fit(encoder, datamodule=data_module)
+    # Train (ckpt_path resumes full training state including optimizer)
+    trainer.fit(encoder, datamodule=data_module, ckpt_path=cfg.train.ckpt_path)
 
 
 if __name__ == "__main__":
