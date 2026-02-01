@@ -29,6 +29,15 @@ class WeakLensingPlots(Metric):
         self.current_epoch = 0
         self.save_local = save_local
 
+    def reset(self):
+        super().reset()
+        self.true_shear1 = []
+        self.true_shear2 = []
+        self.true_convergence = []
+        self.est_shear1 = []
+        self.est_shear2 = []
+        self.est_convergence = []
+
     def update(
         self,
         target_cat_cropped,
