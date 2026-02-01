@@ -119,6 +119,10 @@ class ConvergenceMapsModule(LightningDataModule):
             all_maps = torch.cat(all_maps_list, dim=0)
             all_params = torch.cat(all_params_list, dim=0)
 
+            # Save combined file for faster future loading
+            print(f"Saving combined_batches.pt to {self.data_dir}")
+            torch.save({"maps": all_maps, "params": all_params}, combined_path)
+
         print(f"Loaded {len(all_maps)} samples")
         print(f"Maps shape: {all_maps.shape}")
         print(f"Params shape: {all_params.shape}")
