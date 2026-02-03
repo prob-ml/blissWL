@@ -17,7 +17,7 @@ paths:
 cached_simulator:
     _target_: images_to_maps.cached_dataset.CachedSimulatedDataModule
     batch_size: 1
-    splits: 0:2000/2000:2500/2500:12500
+    splits: 0:3000/3000:4000/4000:14000
     splits_type: count
     num_workers: 8
     cached_data_path: ${paths.cached_data}
