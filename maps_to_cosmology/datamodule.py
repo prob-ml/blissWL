@@ -42,6 +42,8 @@ class ConvergenceMapsModule(LightningDataModule):
         val_split: float = 0.1,
         test_split: float = 0.1,
         seed: int = 42,
+        standardize_params: bool = True,
+        eps: float = 1e-8
     ):
         """Initialize data module.
 
@@ -62,9 +64,15 @@ class ConvergenceMapsModule(LightningDataModule):
         self.test_split = test_split
         self.seed = seed
 
+        self.standardize_params = standardize_params
+        self.eps = eps
+
         self.train_dataset = None
         self.val_dataset = None
         self.test_dataset = None
+
+        self.param_mean = None
+        self.param_std = None
 
     def setup(self, stage: str | None = None):  # noqa: ARG002
         """Load data and create train/val/test splits."""
@@ -117,6 +125,7 @@ class ConvergenceMapsModule(LightningDataModule):
 
         # Create full dataset and split into train/val/test
         full_dataset = ConvergenceMapsDataset(all_maps, all_params)
+        self.raw_params = full_dataset.params.clone
         n_total = len(full_dataset)
         n_val = int(n_total * self.val_split)
         n_test = int(n_total * self.test_split)
@@ -131,6 +140,18 @@ class ConvergenceMapsModule(LightningDataModule):
         print(f"Train samples: {len(self.train_dataset)}")
         print(f"Val samples: {len(self.val_dataset)}")
         print(f"Test samples: {len(self.test_dataset)}")
+
+        if self.standardize_params:
+            train_idx = torch.as_tensor(self.train_dataset.indices, dtype=torch.long)
+            train_params = full_dataset.params[train_idx]
+            train_params = train_params.detach().cpu()
+            self.param_mean = train_params.mean(dim=0)
+            self.param_std = train_params.std(dim=0, unbiased=False).clamp_min(self.eps)
+            full_dataset.params = (full_dataset.params.detach().cpu() - self.param_mean) / self.param_std
+
+            print("Standardized cosmological parameters using TRAIN stats.")
+            print("Train mean:", self.param_mean)
+            print("Train std: ", self.param_std)
 
     def train_dataloader(self) -> DataLoader:
         return DataLoader(
