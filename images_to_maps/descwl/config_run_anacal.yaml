@@ -1,6 +1,7 @@
 # AnaCal configuration for descwl
-# Uses NPE's test set via config_train_npe.yaml (same seed for identical split)
+# Uses NPE's test set (same seed for identical split)
 
+cached_data_path: /nfs/turbo/lsa-regier/scratch/descwl/setting1
 output_file: results/anacal_results_setting1.pt
 n_workers: 28  # Number of parallel workers (1 = sequential)
 
@@ -13,3 +14,19 @@ pixel_scale: 0.2
 # Band combination
 combine_method: inverse_variance
 mask_combine_method: union
+
+# Setting-specific config for PSF reconstruction (optional)
+# Required for settings with variable_psf: true (setting 2)
+# When null/omitted, uses PSF image from data file
+setting_config: null
+
+# Example for setting 2 (uncomment or override via command line):
+# setting_config:
+#   seed: 2
+#   num_images: 14000
+#   variation_factor: 1.0
+#   coadd_dim: 2550
+#   rotate: false
+#   variable_psf: true
+#   pixel_scale: 0.2
+#   npix: 64

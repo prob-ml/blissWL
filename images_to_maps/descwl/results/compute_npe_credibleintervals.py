@@ -3,40 +3,43 @@
 
 Usage:
     python compute_npe_credibleintervals.py
+    python compute_npe_credibleintervals.py ckpt=/path/to/ckpt cached_data_path=/path/to/data output=out.pt
 
-Configure settings in config_compute_npe_credibleintervals.yaml
+Configure settings in config_compute_npe_credibleintervals.yaml or override via command line.
 """
 
 import concurrent.futures
-import os
 
+import hydra
 import lightning as L
 import torch
-import yaml
 from hydra import compose, initialize
+from hydra.core.global_hydra import GlobalHydra
 from hydra.utils import instantiate
+from omegaconf import DictConfig
 from tqdm import tqdm
 
 
-def load_config():
-    config_path = os.path.join(
-        os.path.dirname(os.path.abspath(__file__)),
-        "config_compute_npe_credibleintervals.yaml",
-    )
-    with open(config_path, encoding="utf-8") as f:
-        return yaml.safe_load(f)
-
-
-def main():
-    cfg = load_config()
-
-    device = torch.device(cfg["device"] if torch.cuda.is_available() else "cpu")
+@hydra.main(
+    version_base=None,
+    config_path=".",
+    config_name="config_compute_npe_credibleintervals",
+)
+def main(cfg: DictConfig) -> None:
+    device = torch.device(cfg.device if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
-    # Initialize hydra config
-    with initialize(config_path="../", version_base=None):
+    # Clear global hydra to allow re-initialization for training config
+    GlobalHydra.instance().clear()
+
+    # Initialize hydra config for training (to get data source and encoder config)
+    with initialize(config_path="..", version_base=None):
         hydra_cfg = compose(
-            "config_train_npe", overrides=[f"train.pretrained_weights={cfg['ckpt']}"]
+            "config_train_npe",
+            overrides=[
+                f"train.pretrained_weights={cfg.ckpt}",
+                f"paths.cached_data={cfg.cached_data_path}",
+            ],
         )
 
     L.seed_everything(hydra_cfg.train.seed)
@@ -49,7 +52,7 @@ def main():
     # Load encoder
     print("Loading encoder...")
     encoder = instantiate(hydra_cfg.encoder).to(device)
-    state_dict = torch.load(cfg["ckpt"], map_location=device)["state_dict"]
+    state_dict = torch.load(cfg.ckpt, map_location=device)["state_dict"]
     encoder.load_state_dict(state_dict)
     encoder = encoder.eval()
 
@@ -73,14 +76,12 @@ def main():
             data_list = torch.load(path, weights_only=False)
             return [transform(s) for s in data_list]
 
-        with concurrent.futures.ThreadPoolExecutor(
-            max_workers=cfg["num_workers"]
-        ) as ex:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=cfg.num_workers) as ex:
             file_data = list(ex.map(load_one, chunk_files))
         return [s for samples in file_data for s in samples]
 
     # Process chunks
-    files_per_chunk = cfg["files_per_chunk"]
+    files_per_chunk = cfg.files_per_chunk
     chunk_lists = [
         test_files[i : i + files_per_chunk]
         for i in range(0, len(test_files), files_per_chunk)
@@ -153,8 +154,8 @@ def main():
     }
 
     print(f"Processed {len(output['shear1_true'])} samples")
-    torch.save(output, cfg["output"])
-    print(f"Saved to {cfg['output']}")
+    torch.save(output, cfg.output)
+    print(f"Saved to {cfg.output}")
 
 
 if __name__ == "__main__":

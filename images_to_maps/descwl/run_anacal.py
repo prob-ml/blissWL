@@ -10,20 +10,23 @@ Configure settings in config_run_anacal.yaml
 """
 
 import os
+import re
 import time
 from concurrent.futures import ProcessPoolExecutor
 from datetime import datetime
 
 import anacal
 import galsim
+import hydra
 import numpy as np
 import lightning as L
 import torch
-import yaml
 from hydra import compose, initialize
+from hydra.core.global_hydra import GlobalHydra
 from hydra.utils import instantiate
+from numpy.random import SeedSequence
+from omegaconf import DictConfig
 from tqdm import tqdm
-
 
 # =============================================================================
 # AnaCal Utility Classes
@@ -54,6 +57,233 @@ class GalSimPsfWrapper(anacal.psf.BasePsf):
 
 
 # =============================================================================
+# PSF Functions (copied from descwl-shear-sims to avoid LSST stack dependency)
+# =============================================================================
+
+SCALE = 0.2  # pixel scale in arcsec/pixel
+
+
+def get_se_dim(*, coadd_dim, coadd_scale=None, se_scale=None, rotate=False):
+    """
+    Get single epoch (se) dimensions given coadd dim.
+    Copied from descwl-shear-sims/descwl_shear_sims/sim.py
+    """
+    if (coadd_scale is None) or (se_scale is None):
+        dim = coadd_dim
+    else:
+        coadd_length = coadd_scale * coadd_dim
+        dim = int((coadd_length) / se_scale + 0.5)
+    if rotate:
+        se_dim = int(np.ceil(dim * np.sqrt(2))) + 20
+    else:
+        se_dim = dim + 10
+    return se_dim
+
+
+class PowerSpectrumPSF:
+    """
+    Spatially varying Moffat PSF according to Heymans et al. (2012).
+    Copied from descwl-shear-sims/descwl_shear_sims/psfs/ps_psf.py
+    """
+
+    def __init__(
+        self,
+        *,
+        rng,
+        im_width,
+        buff,
+        scale,
+        trunc=1,
+        noise_level=None,
+        variation_factor=1,
+        median_seeing=0.8,
+    ):
+        self._rng = rng
+        self._im_cen = (im_width - 1) / 2
+        self._scale = scale
+        self._tot_width = im_width + 2 * buff
+        self._x_scale = 2.0 / self._tot_width / scale
+        self._noise_level = noise_level
+        self._buff = buff
+        self._variation_factor = variation_factor
+        self._median_seeing = median_seeing
+
+        def _pf(k):
+            return (k**2 + (1.0 / 180) ** 2) ** (-11.0 / 6.0) * np.exp(
+                -((k * trunc) ** 2)
+            )
+
+        self._ps = galsim.PowerSpectrum(e_power_function=_pf, b_power_function=_pf)
+        ng = 128
+        gs = max(self._tot_width * self._scale / ng, 1)
+        self.ng = ng
+        self.gs = gs
+        seed = self._rng.randint(1, 2**30)
+        self._ps.buildGrid(
+            grid_spacing=gs,
+            ngrid=ng,
+            get_convergence=True,
+            variance=(0.01 * variation_factor) ** 2,
+            rng=galsim.BaseDeviate(seed),
+        )
+
+        g1_grid, g2_grid, mu_grid = galsim.lensing_ps.theoryToObserved(
+            self._ps.im_g1.array, self._ps.im_g2.array, self._ps.im_kappa.array
+        )
+
+        self._lut_g1 = galsim.table.LookupTable2D(
+            self._ps.x_grid,
+            self._ps.y_grid,
+            g1_grid.T,
+            edge_mode="wrap",
+            interpolant=galsim.Lanczos(5),
+        )
+        self._lut_g2 = galsim.table.LookupTable2D(
+            self._ps.x_grid,
+            self._ps.y_grid,
+            g2_grid.T,
+            edge_mode="wrap",
+            interpolant=galsim.Lanczos(5),
+        )
+        self._lut_mu = galsim.table.LookupTable2D(
+            self._ps.x_grid,
+            self._ps.y_grid,
+            mu_grid.T - 1,
+            edge_mode="wrap",
+            interpolant=galsim.Lanczos(5),
+        )
+
+        self._g1_mean = self._rng.normal() * 0.01 * variation_factor
+        self._g2_mean = self._rng.normal() * 0.01 * variation_factor
+
+        if self._noise_level is not None and self._noise_level > 0:
+            self._noise_field = (
+                self._rng.normal(size=(im_width + buff + 37, im_width + buff + 37))
+                * noise_level
+            )
+
+        def _getlogmnsigma(mean, sigma):
+            logmean = np.log(mean) - 0.5 * np.log(1 + sigma**2 / mean**2)
+            logvar = np.log(1 + sigma**2 / mean**2)
+            logsigma = np.sqrt(logvar)
+            return logmean, logsigma
+
+        lm, ls = _getlogmnsigma(self._median_seeing, 0.1)
+        self._fwhm_central = np.exp(self._rng.normal() * ls + lm)
+
+    def _get_lensing(self, pos):
+        pos_x, pos_y = galsim.utilities._convertPositions(
+            pos, galsim.arcsec, "_get_lensing"
+        )
+        return (
+            self._lut_g1(pos_x, pos_y),
+            self._lut_g2(pos_x, pos_y),
+            self._lut_mu(pos_x, pos_y) + 1,
+        )
+
+    def _get_atm(self, x, y):
+        xs = (x + 1 - self._im_cen) * self._scale
+        ys = (y + 1 - self._im_cen) * self._scale
+        g1, g2, mu = self._get_lensing((xs, ys))
+
+        if g1 * g1 + g2 * g2 >= 1.0:
+            norm = np.sqrt(g1 * g1 + g2 * g2) / 0.5
+            g1 /= norm
+            g2 /= norm
+
+        fwhm = self._fwhm_central / np.power(mu, 0.75)
+        psf = galsim.Moffat(beta=2.5, fwhm=fwhm).shear(
+            g1=g1 + self._g1_mean, g2=g2 + self._g2_mean
+        )
+        return psf
+
+    def getPSF(self, pos):
+        """Get PSF model at position (zero-indexed pixel coordinates)."""
+        psf = self._get_atm(pos.x, pos.y)
+
+        if self._noise_level is not None and self._noise_level > 0:
+            xll = int(pos.x + self._buff - 16)
+            yll = int(pos.y + self._buff - 16)
+            assert xll >= 0 and xll + 33 <= self._noise_field.shape[1]
+            assert yll >= 0 and yll + 33 <= self._noise_field.shape[0]
+
+            stamp = self._noise_field[yll : yll + 33, xll : xll + 33].copy()
+            psf += galsim.InterpolatedImage(
+                galsim.ImageD(stamp, scale=self._scale), normalization="sb"
+            )
+
+        return psf.withFlux(1.0)
+
+
+def make_ps_psf(*, rng, dim, pixel_scale=SCALE, variation_factor=1):
+    """
+    Create a power spectrum PSF.
+    Copied from descwl-shear-sims/descwl_shear_sims/psfs/ps_psf.py
+    """
+    return PowerSpectrumPSF(
+        rng=rng,
+        im_width=dim,
+        buff=dim / 2,
+        scale=pixel_scale,
+        variation_factor=variation_factor,
+    )
+
+
+# =============================================================================
+# PSF Reconstruction Functions
+# =============================================================================
+
+
+def reconstruct_variable_psf(file_path, setting_config):
+    """
+    Reconstruct variable PSF from filename for backward compatibility.
+
+    Parameters
+    ----------
+    file_path : str
+        Path to data file (e.g., "dataset_123_size_1.pt")
+    setting_config : dict
+        Config with keys: seed, num_images, variation_factor, coadd_dim, rotate, pixel_scale, npix
+
+    Returns
+    -------
+    GalSimPsfWrapper with is_variable=True
+    """
+    # Parse image index from filename
+    match = re.search(r"dataset_(\d+)_size", os.path.basename(file_path))
+    if not match:
+        raise ValueError(f"Cannot parse index from filename: {file_path}")
+    global_idx = int(match.group(1))
+
+    # Reconstruct the same seed sequence used during generation
+    ss = SeedSequence(setting_config["seed"])
+    child_seeds = ss.spawn(setting_config["num_images"])
+    child_seed = int(child_seeds[global_idx].generate_state(1)[0])
+    psf_seed = (child_seed + 1000000) % (2**32)
+
+    # Compute se_dim
+    se_dim = get_se_dim(
+        coadd_dim=setting_config["coadd_dim"],
+        rotate=setting_config.get("rotate", False),
+    )
+
+    # Reconstruct PSF
+    rng = np.random.RandomState(psf_seed)
+    psf_obj = make_ps_psf(
+        rng=rng,
+        dim=se_dim,
+        variation_factor=setting_config.get("variation_factor", 1.0),
+    )
+
+    return GalSimPsfWrapper(
+        psf_obj,
+        pixel_scale=setting_config.get("pixel_scale", 0.2),
+        npix=setting_config.get("npix", 64),
+        is_variable=True,
+    )
+
+
+# =============================================================================
 # Band Combination Functions
 # =============================================================================
 
@@ -65,7 +295,7 @@ def combine_multiband_images(
     if method == "inverse_variance":
         if band_variances is not None:
             weights = []
-            band_names = ["g", "r", "i", "z"][: images_tensor.shape[0]]
+            band_names = list(band_variances.keys())  # Use actual band names from data
             for band in band_names:
                 variance_value = band_variances.get(band, 0.354)
                 weights.append(1.0 / variance_value)
@@ -190,21 +420,27 @@ def anacal_multiband_combined(
 # =============================================================================
 
 
-def process_sample(sample, config):
+def process_sample(sample, config, file_path=None):
     """Process a single sample with AnaCal."""
     images = sample["images"]
     catalog = sample["tile_catalog"]
     anacal_data = sample["anacal_data"]
 
-    psf_image = anacal_data["psf_image"]
     masks_dict = anacal_data["masks"]
     band_variances = anacal_data["variances"]
     bright_star_catalog = anacal_data.get("bright_star_catalog")
     pixel_scale = anacal_data.get("pixel_scale", config["pixel_scale"])
 
+    # Determine PSF: reconstruct variable PSF if setting_config provided
+    setting_config = config.get("setting_config")
+    if setting_config and setting_config.get("variable_psf", False) and file_path:
+        psf_input = reconstruct_variable_psf(file_path, setting_config)
+    else:
+        psf_input = anacal_data["psf_image"]
+
     e1_sum, e1g1_sum, e2_sum, e2g2_sum, num_detections = anacal_multiband_combined(
         images,
-        psf_image,
+        psf_input,
         masks_dict=masks_dict,
         combine_method=config["combine_method"],
         mask_combine_method=config["mask_combine_method"],
@@ -234,32 +470,28 @@ def process_file(args):
         data_list = torch.load(file_path, weights_only=False)
         results = []
         for sample in data_list:
-            results.append(process_sample(sample, config))
+            results.append(process_sample(sample, config, file_path))
         return results, None
     except Exception as e:
         return None, str(e)
 
 
-def load_config():
-    """Load anacal config from YAML file."""
-    config_path = os.path.join(
-        os.path.dirname(os.path.abspath(__file__)), "config_run_anacal.yaml"
-    )
-    with open(config_path, encoding="utf-8") as f:
-        return yaml.safe_load(f)
-
-
-def main():
+@hydra.main(version_base=None, config_path=".", config_name="config_run_anacal")
+def main(cfg: DictConfig) -> None:
     print("=== ANACAL PROCESSING ===")
     print(f"Start time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
-    # Load anacal-specific config
-    cfg = load_config()
-    print(f"Output: {cfg['output_file']}")
+    print(f"Output: {cfg.output_file}")
 
-    # Use NPE's hydra config for data source
-    with initialize(config_path="./", version_base=None):
-        hydra_cfg = compose("config_train_npe")
+    # Clear global hydra to allow re-initialization for loading training config
+    GlobalHydra.instance().clear()
+
+    # Use NPE's hydra config for data source with cached_data_path override
+    with initialize(config_path=".", version_base=None):
+        hydra_cfg = compose(
+            "config_train_npe",
+            overrides=[f"paths.cached_data={cfg.cached_data_path}"],
+        )
 
     # Same seed as NPE for identical test set
     L.seed_everything(hydra_cfg.train.seed)
@@ -286,6 +518,7 @@ def main():
     start_time = time.time()
     failed_count = 0
     n_workers = cfg.get("n_workers", 1)
+    cfg_dict = dict(cfg)  # Convert to dict for passing to workers
 
     def append_results(file_results):
         for r in file_results:
@@ -299,7 +532,7 @@ def main():
 
     if n_workers > 1:
         print(f"Using {n_workers} workers...")
-        args_list = [(f, cfg) for f in test_files]
+        args_list = [(f, cfg_dict) for f in test_files]
         with ProcessPoolExecutor(max_workers=n_workers) as executor:
             # Use map() to preserve order (as_completed returns in completion order)
             for file_results, error in tqdm(
@@ -314,7 +547,7 @@ def main():
                     append_results(file_results)
     else:
         for file_path in tqdm(test_files, desc="Processing"):
-            file_results, error = process_file((file_path, cfg))
+            file_results, error = process_file((file_path, cfg_dict))
             if error:
                 print(f"Error processing {file_path}: {error}")
                 failed_count += 1
@@ -341,8 +574,8 @@ def main():
         "seed": hydra_cfg.train.seed,
     }
 
-    torch.save(output, cfg["output_file"])
-    print(f"\nSaved to: {cfg['output_file']}")
+    torch.save(output, cfg.output_file)
+    print(f"\nSaved to: {cfg.output_file}")
 
     # Summary
     print("\n=== COMPLETE ===")
