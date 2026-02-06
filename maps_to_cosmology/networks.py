@@ -66,7 +66,7 @@ class ResNet(nn.Module):
     """ResNet encoder for convergence maps."""
 
     def __init__(
-        self, num_bins: int, map_slen: int, output_dim: int, base_channels: int = 32
+        self, num_bins: int, map_slen: int, output_dim: int, base_channels: int = 32, dropout_p=0.4
     ):
         super().__init__()
         self.stem = nn.Sequential(
@@ -80,6 +80,7 @@ class ResNet(nn.Module):
         self.layer3 = ResidualBlock(base_channels * 2, base_channels * 4, stride=2)
 
         self.global_pool = nn.AdaptiveAvgPool2d((1, 1))
+        self.dropout = nn.Dropout(p=dropout_p)
         self.head = nn.Linear(base_channels * 4, output_dim)
 
     def forward(self, x):
@@ -89,4 +90,5 @@ class ResNet(nn.Module):
         x = self.layer3(x)
         x = self.global_pool(x)
         x = torch.flatten(x, 1)
+        x = self.dropout(x)
         return self.head(x)
