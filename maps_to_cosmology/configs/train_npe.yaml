@@ -25,10 +25,10 @@ encoder:
   num_cosmo_params: 6
   lr: 1e-5
   var_dist:
-    _target_: maps_to_cosmology.distributions.IndependentMVN
+    _target_: maps_to_cosmology.distributions.FullRankMVN
     num_params: ${encoder.num_cosmo_params}
-    low_clamp: -14
-    high_clamp: 10
+    # low_clamp: -14
+    # high_clamp: 10
 
 train:
   trainer:
