@@ -49,7 +49,7 @@ class Encoder(LightningModule):
         self.net = ResNet(
             num_bins=num_bins,
             map_slen=map_slen,
-            output_dim=num_cosmo_params * 2,
+            output_dim=self.var_dist.output_dim,
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -80,7 +80,8 @@ class Encoder(LightningModule):
     def training_step(self, batch: tuple, batch_idx: int) -> torch.Tensor:
         maps, params = batch
         out = self.forward(maps)
-        loc = out[:, 0::2]  # Posterior means [B, 6]
+        D = self.var_dist.num_params
+        loc = out[:, :D]  # Posterior means [B, 6]
 
         # Update metrics
         self.train_rmse.update(loc, params)
@@ -93,7 +94,8 @@ class Encoder(LightningModule):
     def validation_step(self, batch: tuple, batch_idx: int) -> torch.Tensor:
         maps, params = batch
         out = self.forward(maps)
-        loc = out[:, 0::2]  # Posterior means [B, 6]
+        D = self.var_dist.num_params
+        loc = out[:, :D]  # Posterior means [B, 6]
 
         # Update metrics
         self.val_rmse.update(loc, params)
@@ -143,7 +145,8 @@ class Encoder(LightningModule):
     def test_step(self, batch: tuple, batch_idx: int) -> torch.Tensor:
         maps, params = batch
         out = self.forward(maps)
-        loc = out[:, 0::2]  # Posterior means [B, 6]
+        D = self.var_dist.num_params
+        loc = out[:, :D]  # Posterior means [B, 6]
 
         # Update metrics
         self.test_rmse.update(loc, params)
