@@ -46,10 +46,16 @@ class Encoder(LightningModule):
         self.test_scatter = ScatterPlot()
         self.test_pcc = PearsonCorrelationCoefficient(self.param_names)
 
+        target = str(var_dist_cfg.get("_target_", ""))
+        if "FullRankMVN" in target:
+            output_dim = num_cosmo_params + (num_cosmo_params * (num_cosmo_params + 1)) // 2
+        else:
+            output_dim = num_cosmo_params * 2
+
         self.net = ResNet(
             num_bins=num_bins,
             map_slen=map_slen,
-            output_dim=num_cosmo_params * 2,
+            output_dim=output_dim,
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -80,7 +86,7 @@ class Encoder(LightningModule):
     def training_step(self, batch: tuple, batch_idx: int) -> torch.Tensor:
         maps, params = batch
         out = self.forward(maps)
-        loc = out[:, 0::2]  # Posterior means [B, 6]
+        loc = out[:, :self.num_cosmo_params]  # Posterior means [B, 6]
 
         # Update metrics
         self.train_rmse.update(loc, params)
@@ -93,7 +99,7 @@ class Encoder(LightningModule):
     def validation_step(self, batch: tuple, batch_idx: int) -> torch.Tensor:
         maps, params = batch
         out = self.forward(maps)
-        loc = out[:, 0::2]  # Posterior means [B, 6]
+        loc = out[:, :self.num_cosmo_params]  # Posterior means [B, 6]
 
         # Update metrics
         self.val_rmse.update(loc, params)
@@ -143,7 +149,7 @@ class Encoder(LightningModule):
     def test_step(self, batch: tuple, batch_idx: int) -> torch.Tensor:
         maps, params = batch
         out = self.forward(maps)
-        loc = out[:, 0::2]  # Posterior means [B, 6]
+        loc = out[:, :self.num_cosmo_params]  # Posterior means [B, 6]
 
         # Update metrics
         self.test_rmse.update(loc, params)
