@@ -43,6 +43,7 @@ def main(cfg: DictConfig) -> None:
         num_workers=cfg.convergence_maps.num_workers,
         val_split=cfg.convergence_maps.val_split,
         test_split=cfg.convergence_maps.test_split,
+        standardize_params=cfg.convergence_maps.standardize_params,
         seed=cfg.seed,
     )
 
