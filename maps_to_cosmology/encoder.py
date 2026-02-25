@@ -1,8 +1,6 @@
 import matplotlib.pyplot as plt
 import torch
-from hydra.utils import instantiate
 from lightning import LightningModule
-from omegaconf import DictConfig
 
 from maps_to_cosmology.metrics import (
     RootMeanSquaredError,
@@ -27,14 +25,14 @@ class Encoder(LightningModule):
         hidden_dim: int,
         num_cosmo_params: int,
         lr: float,
-        var_dist_cfg: DictConfig,
+        var_dist,
     ):
         super().__init__()
         self.save_hyperparameters()
         self.lr = lr
         self.num_cosmo_params = num_cosmo_params
         self.param_names = ["omega_c", "omega_b", "sigma_8", "h_0", "n_s", "w_0"]
-        self.var_dist = instantiate(var_dist_cfg)
+        self.var_dist = var_dist
 
         # Metrics (separate instances for val/test)
         self.train_rmse = RootMeanSquaredError(self.param_names)
@@ -46,9 +44,11 @@ class Encoder(LightningModule):
         self.test_scatter = ScatterPlot()
         self.test_pcc = PearsonCorrelationCoefficient(self.param_names)
 
-        target = str(var_dist_cfg.get("_target_", ""))
+        target = type(var_dist).__name__
         if "FullRankMVN" in target:
-            output_dim = num_cosmo_params + (num_cosmo_params * (num_cosmo_params + 1)) // 2
+            output_dim = (
+                num_cosmo_params + (num_cosmo_params * (num_cosmo_params + 1)) // 2
+            )
         else:
             output_dim = num_cosmo_params * 2
 
@@ -86,7 +86,7 @@ class Encoder(LightningModule):
     def training_step(self, batch: tuple, batch_idx: int) -> torch.Tensor:
         maps, params = batch
         out = self.forward(maps)
-        loc = out[:, :self.num_cosmo_params]  # Posterior means [B, 6]
+        loc = out[:, : self.num_cosmo_params]  # Posterior means [B, 6]
 
         # Update metrics
         self.train_rmse.update(loc, params)
@@ -99,7 +99,7 @@ class Encoder(LightningModule):
     def validation_step(self, batch: tuple, batch_idx: int) -> torch.Tensor:
         maps, params = batch
         out = self.forward(maps)
-        loc = out[:, :self.num_cosmo_params]  # Posterior means [B, 6]
+        loc = out[:, : self.num_cosmo_params]  # Posterior means [B, 6]
 
         # Update metrics
         self.val_rmse.update(loc, params)
@@ -149,7 +149,7 @@ class Encoder(LightningModule):
     def test_step(self, batch: tuple, batch_idx: int) -> torch.Tensor:
         maps, params = batch
         out = self.forward(maps)
-        loc = out[:, :self.num_cosmo_params]  # Posterior means [B, 6]
+        loc = out[:, : self.num_cosmo_params]  # Posterior means [B, 6]
 
         # Update metrics
         self.test_rmse.update(loc, params)
