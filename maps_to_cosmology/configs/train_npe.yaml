@@ -20,6 +20,7 @@ convergence_maps:
   standardize_params: false
 
 encoder:
+  _target_: maps_to_cosmology.encoder.Encoder
   num_bins: 5
   map_slen: 256
   hidden_dim: 128
@@ -28,8 +29,9 @@ encoder:
   var_dist:
     _target_: maps_to_cosmology.distributions.FullRankMVN
     num_params: ${encoder.num_cosmo_params}
-    # low_clamp: -14
-    # high_clamp: 10
+    diag_eps: 1e-6
+    diag_clamp_low: -14
+    diag_clamp_high: 10
 
 train:
   trainer:

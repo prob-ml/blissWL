@@ -7,7 +7,6 @@ from lightning.pytorch.callbacks import Callback, EarlyStopping, ModelCheckpoint
 from omegaconf import DictConfig
 
 from maps_to_cosmology.datamodule import ConvergenceMapsModule
-from maps_to_cosmology.encoder import Encoder
 
 
 class SaveBestScatterplot(Callback):
@@ -48,14 +47,7 @@ def main(cfg: DictConfig) -> None:
     )
 
     # Create model
-    model = Encoder(
-        num_bins=cfg.encoder.num_bins,
-        map_slen=cfg.encoder.map_slen,
-        hidden_dim=cfg.encoder.hidden_dim,
-        num_cosmo_params=cfg.encoder.num_cosmo_params,
-        lr=cfg.encoder.lr,
-        var_dist_cfg=cfg.encoder.var_dist,
-    )
+    encoder = instantiate(cfg.encoder)
 
     # Create logger
     logger = instantiate(cfg.train.logger)
@@ -88,7 +80,7 @@ def main(cfg: DictConfig) -> None:
     )
 
     # Train
-    trainer.fit(model, datamodule)
+    trainer.fit(encoder, datamodule)
 
     print(f"\nBest model saved to: {checkpoint_callback.best_model_path}")
     print(f"Best val_loss: {checkpoint_callback.best_model_score:.4f}")

@@ -42,11 +42,12 @@ class FullRankMVN:
         (including diagonal), so Σ = L L^T.
     We constrain diag(L) > 0 via exp(.) + eps for numerical stability.
     """
+
     def __init__(
         self,
         num_params: int,
         diag_eps: float = 1e-6,
-        diag_clamp_low: float = -10.0,
+        diag_clamp_low: float = -14.0,
         diag_clamp_high: float = 10.0,
     ):
         self.num_params = num_params
