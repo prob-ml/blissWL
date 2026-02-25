@@ -93,7 +93,10 @@ tensorboard --logdir=images_to_maps/descwl/results
 
 ## Maps to cosmology
 
-This module implements NPE for inferring cosmological parameters from weak lensing convergence maps.
+This module implements inference of cosmological parameters from weak lensing convergence maps. Two methods are supported:
+
+1. **NPE** (neural posterior estimation): Infers a full-rank multivariate normal variational distribution over cosmological parameters.
+2. **Flow matching**: Approximates the posterior distribution using a velocity field that transports noise to cosmological parameters via ODE integration.
 
 ### Generate convergence maps
 
@@ -111,10 +114,16 @@ python -m maps_to_cosmology.generate_maps num_maps=50000 output_dir=/path/to/out
 
 ### Train the encoder
 
-Train the NPE encoder network:
+Train with NPE (default):
 
 ```bash
 python -m maps_to_cosmology.train
+```
+
+Train with flow matching:
+
+```bash
+python -m maps_to_cosmology.train --config-name=train_flowmatching
 ```
 
 Training logs are saved to TensorBoard. View with:
