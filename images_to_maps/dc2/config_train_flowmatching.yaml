@@ -50,7 +50,7 @@ encoder:
     t_embed_dim: 8
     num_redshift_bins: ${surveys.dc2.num_redshift_bins}
     velo_net_channels: 128
-    scale_factor: 100.0
+    scale_factor: 1000.0
     optimizer_params:
         lr: 1e-4
     mode_metrics:
