@@ -50,7 +50,7 @@ encoder:
     t_embed_dim: 8
     num_redshift_bins: ${surveys.dc2.num_redshift_bins}
     velo_net_channels: 128
-    scale_factor: 1000.0
+    scale_factor: 100.0
     optimizer_params:
         lr: 1e-4
     mode_metrics:
@@ -98,7 +98,7 @@ train:
             _target_: lightning.pytorch.loggers.TensorBoardLogger
             save_dir: ${paths.output}
             name: results/dc2/flowmatching
-            version: nanpsf_${encoder.ch_max}_${encoder.initial_downsample}_${encoder.more_up_layers}
+            version: nanpsf_${encoder.ch_max}_${encoder.initial_downsample}_${encoder.more_up_layers}_scale${encoder.scale_factor}
             default_hp_metric: false
         reload_dataloaders_every_n_epochs: 0
         check_val_every_n_epoch: 1
