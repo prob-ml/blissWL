@@ -49,7 +49,7 @@ encoder:
     image_normalizers: ${lensing_normalizers_nanpsf}
     t_embed_dim: 8
     num_redshift_bins: ${surveys.dc2.num_redshift_bins}
-    velo_net_channels: 128
+    velo_net_channels: 256
     scale_factor: 100.0
     optimizer_params:
         lr: 1e-4
