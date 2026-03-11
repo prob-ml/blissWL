@@ -10,7 +10,7 @@ output_dir: /data/scratch/convergence_maps/dc2_lognormal
 num_maps: 100000
 seed: 42
 combine_only: false  # If true, skip generation and just combine existing batch files
-batch_size: 64  # Smaller maps allow larger batches
+batch_size: 16
 
 N: 64             # Resolution (64x64 tiles, cropped to 64x40)
 map_size: 0.91022 # Field of view in degrees (0.2 arcsec/pixel * 256 pixels/tile / 3600 arcsec/degree * 64 tiles = ~0.91 degrees)
