@@ -129,7 +129,7 @@ class ConvergenceMapsModule(LightningDataModule):
 
         # Create full dataset and split into train/val/test
         full_dataset = ConvergenceMapsDataset(all_maps, all_params)
-        self.raw_params = full_dataset.params.clone
+        self.raw_params = full_dataset.params.clone()
         n_total = len(full_dataset)
         n_val = int(n_total * self.val_split)
         n_test = int(n_total * self.test_split)

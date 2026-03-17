@@ -18,12 +18,16 @@ class TimeEncoder(nn.Module):
         super().__init__()
         # TODO: Build an MLP that maps (B, 1) -> (B, t_embed_dim).
         # Suggested: Linear(1, t_embed_dim // 2) -> SiLU -> Linear(t_embed_dim // 2, t_embed_dim)
-        raise NotImplementedError
+        self.net = nn.Sequential(
+            nn.Linear(1, t_embed_dim //2),
+            nn.SiLU(),
+            nn.Linear(t_embed_dim // 2, t_embed_dim),
+        )
 
     def forward(self, t):
         # Input:  t of shape (B, 1)
         # Output: t_embedding of shape (B, t_embed_dim)
-        raise NotImplementedError
+        return self.net(t)
 
 
 class VelocityNet(nn.Module):
@@ -35,7 +39,14 @@ class VelocityNet(nn.Module):
         super().__init__()
         # TODO: Build an MLP that maps (B, num_cosmo_params + x_embed_dim + t_embed_dim) -> (B, num_cosmo_params).
         # Suggested: concat inputs, then alternate Linear and SiLU layers (ending with Linear)
-        raise NotImplementedError
+        in_dim = num_cosmo_params + x_embed_dim + t_embed_dim
+        self.net = nn.Sequential(
+            nn.Linear(in_dim, hidden_dim),
+            nn.SiLU(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.SiLU(),
+            nn.Linear(hidden_dim, num_cosmo_params),
+        )
 
     def forward(self, zt, x_embedding, t_embedding):
         # Inputs:
@@ -43,7 +54,7 @@ class VelocityNet(nn.Module):
         #   x_embedding — (B, x_embed_dim), map encoding
         #   t_embedding — (B, t_embed_dim), time encoding
         # Output: predicted velocity of shape (B, num_cosmo_params)
-        raise NotImplementedError
+        return self.net(torch.cat([zt, x_embedding, t_embedding], dim=-1))
 
 
 class FlowMatching(LightningModule):
@@ -94,32 +105,60 @@ class FlowMatching(LightningModule):
     def compute_loss(self, maps, params):
         """Compute flow matching loss: MSE between true and predicted velocity."""
         # 1. Encode maps
+        x_embedding = self.map_encoder(maps)
         # 2. Sample time
+        t = torch.rand(maps.shape[0], 1, device=maps.device)
         # 3. Encode time
+        t_embedding = self.time_encoder(t)
         # 4. Set z1 = params and sample z0
+        z1 = params
+        z0 = torch.randn_like(z1)
         # 5. Define zt as interpolation of z1 and z0
+        zt = (1 - t) * z0 + t * z1
         # 6. Define true velocity
+        true_velocity = z1 - z0
         # 7. Predict velocity with self.velocity_net
+        predicted_velocity = self.velocity_net(zt, x_embedding, t_embedding)
         # 8. Return MSE
-        raise NotImplementedError
+        return nn.functional.mse_loss(predicted_velocity, true_velocity)
 
     def _sample_path(self, zt, x_embedding, t, t_next):
         """One ODE step from t to t_next."""
         # Compute dt = t_next - t, encode t, predict velocity at (zt, x_embedding, t).
         # Use Euler method or Midpoint method to update zt
         # Return updated z.  Use self.ode_method to determine which integrator to use.
-        raise NotImplementedError
+        dt = t_next - t
+        t_embedding = self.time_encoder(t)
+        velocity = self.velocity_net(zt, x_embedding, t_embedding)
+        if self.ode_method == "euler":
+            z_next = zt + velocity * dt
+            return z_next
+        elif self.ode_method == "midpoint":
+            z_mid = zt + velocity * (dt / 2)
+            t_mid = t + dt / 2
+            t_mid_embedding = self.time_encoder(t_mid)
+            velocity_mid = self.velocity_net(z_mid, x_embedding, t_mid_embedding)
+            z_next = zt + velocity_mid * dt
+            return z_next
+        else:
+            raise ValueError(f"Unknown ODE method: {self.ode_method}")
 
     def _integrate_ode(self, x_embedding):
         """Integrate ODE from t=0 (noise) to t=1 (data)."""
         # 1. Sample z ~ N(0, I) of shape (B, num_cosmo_params) at t=0.
+        z = torch.randn(x_embedding.shape[0], self.num_cosmo_params, device=x_embedding.device)
         # 2. Compute dt = 1 / self.num_ode_steps.
+        dt = 1 / self.num_ode_steps
         # 3. For each step i in range(self.num_ode_steps):
         #      t      = i * dt       (broadcast to (B, 1))
         #      t_next = (i + 1) * dt
         #      z = self._sample_path(z, x_embedding, t, t_next)
+        for i in range(self.num_ode_steps):
+            t = torch.full((x_embedding.shape[0], 1), i * dt, device=x_embedding.device)
+            t_next = torch.full((x_embedding.shape[0], 1), (i + 1) * dt, device=x_embedding.device)
+            z = self._sample_path(z, x_embedding, t, t_next)
         # 4. Return z at t=1, shape (B, num_cosmo_params).
-        raise NotImplementedError
+        return z
 
     def predict(self, maps, use_mode=False):
         """Generate predictions via ODE integration.

@@ -30,7 +30,7 @@ class SaveBestScatterplot(Callback):
                 plt.close(fig)
 
 
-@hydra.main(version_base=None, config_path="configs", config_name="train_npe")
+@hydra.main(version_base=None, config_path="configs", config_name="train_flowmatching")
 def main(cfg: DictConfig) -> None:
     """Train the neural posterior estimation model."""
     seed_everything(cfg.seed, workers=True)
