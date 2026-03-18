@@ -165,7 +165,7 @@ class FlowMatching(L.LightningModule):
         t_embedding = self.time_encoder(t)
         velo_t = self.velocity_net(zt, x_embedding, t_embedding)
 
-        t_diff = t_next.unique() - t.unique()
+        t_diff = t_next[0, 0] - t[0, 0]
 
         if method == "midpoint":
             half_step = 0.5 * t_diff
@@ -235,17 +235,18 @@ class FlowMatching(L.LightningModule):
 
         target_cat = batch["tile_catalog"]
 
-        mode_cat = self.sample(batch, use_mode=True)
-        self.mode_metrics.update(target_cat, mode_cat, None)
+        with torch.no_grad():
+            mode_cat = self.sample(batch, use_mode=True)
+            self.mode_metrics.update(target_cat, mode_cat, None)
 
-        if self.sample_metrics is not None:
-            sample_cat = self.sample(batch, use_mode=False)
-            self.sample_metrics.update(target_cat, sample_cat, None)
+            if self.sample_metrics is not None:
+                sample_cat = self.sample(batch, use_mode=False)
+                self.sample_metrics.update(target_cat, sample_cat, None)
 
-        if self.sample_image_renders is not None:
-            self.sample_image_renders.update(
-                target_cat, mode_cat, self.current_epoch, batch_idx
-            )
+            if self.sample_image_renders is not None:
+                self.sample_image_renders.update(
+                    target_cat, mode_cat, self.current_epoch, batch_idx
+                )
 
     def report_metrics(self, metrics, logging_name):
         """Report metrics to logger."""
@@ -353,8 +354,7 @@ class FlowMatching(L.LightningModule):
             ax.legend()
             fig.savefig(save_path / "loss_curves.png")
             plt.close(fig)
-
-        print(f"Loss plots saved to {save_path}")
+            print(f"Loss plots saved to {save_path}")
 
     def configure_optimizers(self):
         optimizer = torch.optim.Adam(self.parameters(), **self.optimizer_params)

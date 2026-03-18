@@ -141,6 +141,9 @@ def main(cfg: DictConfig) -> None:
     print(f"Output directory: {cfg.output_dir}")
     print(f"Random seed: {cfg.seed}")
     print(f"Map resolution: {cfg.N}x{cfg.N}")
+    crop_width = cfg.get("crop_width", None)
+    if crop_width is not None:
+        print(f"Cropping maps to {cfg.N}x{crop_width} (height x width)")
     print(f"Redshift bins: {cfg.nbins}")
     print(f"Batch size: {cfg.batch_size}")
 
@@ -215,6 +218,10 @@ def main(cfg: DictConfig) -> None:
 
         # Wait for computation to complete (for accurate timing)
         jax.block_until_ready(maps_batch)
+
+        # Crop width if configured (e.g., 64x64 -> 64x40 for DC2 geometry)
+        if crop_width is not None:
+            maps_batch = maps_batch[:, :, :crop_width, :]
 
         # Stack params into array [batch_size, num_params]
         params_array = jnp.stack(
