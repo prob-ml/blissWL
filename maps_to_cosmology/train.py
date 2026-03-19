@@ -43,6 +43,7 @@ def main(cfg: DictConfig) -> None:
         val_split=cfg.convergence_maps.val_split,
         test_split=cfg.convergence_maps.test_split,
         standardize_params=cfg.convergence_maps.standardize_params,
+        smoothing_sigma=cfg.convergence_maps.get("smoothing_sigma", None),
         seed=cfg.seed,
     )
 
