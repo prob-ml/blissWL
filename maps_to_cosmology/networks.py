@@ -66,7 +66,7 @@ class ResNet(nn.Module):
     """ResNet encoder for convergence maps."""
 
     def __init__(
-        self, num_bins: int, map_slen: int, output_dim: int, base_channels: int = 32, dropout_p=0.4
+        self, num_bins: int, output_dim: int, base_channels: int = 32, dropout_p=0.4
     ):
         super().__init__()
         self.stem = nn.Sequential(

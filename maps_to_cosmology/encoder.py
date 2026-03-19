@@ -21,8 +21,6 @@ class Encoder(LightningModule):
     def __init__(
         self,
         num_bins: int,
-        map_slen: int,
-        hidden_dim: int,
         num_cosmo_params: int,
         lr: float,
         var_dist,
@@ -54,7 +52,6 @@ class Encoder(LightningModule):
 
         self.net = ResNet(
             num_bins=num_bins,
-            map_slen=map_slen,
             output_dim=output_dim,
         )
 
