@@ -33,7 +33,7 @@ encoder:
 
 train:
   trainer:
-    max_epochs: 200
+    max_epochs: 500
     accelerator: gpu
     devices: 1
     log_every_n_steps: 10
@@ -51,5 +51,5 @@ train:
       save_top_k: 1
     early_stopping:
       monitor: val_loss
-      patience: 50
+      patience: 100
       mode: min

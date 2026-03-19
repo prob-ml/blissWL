@@ -24,10 +24,14 @@ class Encoder(LightningModule):
         num_cosmo_params: int,
         lr: float,
         var_dist,
+        lr_milestones: list[int] | None = None,
+        lr_gamma: float = 0.1,
     ):
         super().__init__()
         self.save_hyperparameters()
         self.lr = lr
+        self.lr_milestones = lr_milestones or []
+        self.lr_gamma = lr_gamma
         self.num_cosmo_params = num_cosmo_params
         self.param_names = ["omega_c", "omega_b", "sigma_8", "h_0", "n_s", "w_0"]
         self.var_dist = var_dist
@@ -182,4 +186,10 @@ class Encoder(LightningModule):
         self.test_pcc.reset()
 
     def configure_optimizers(self):
-        return torch.optim.Adam(self.parameters(), lr=self.lr, weight_decay=1e-4)
+        optimizer = torch.optim.Adam(self.parameters(), lr=self.lr, weight_decay=1e-4)
+        if not self.lr_milestones:
+            return optimizer
+        scheduler = torch.optim.lr_scheduler.MultiStepLR(
+            optimizer, milestones=self.lr_milestones, gamma=self.lr_gamma
+        )
+        return {"optimizer": optimizer, "lr_scheduler": scheduler}

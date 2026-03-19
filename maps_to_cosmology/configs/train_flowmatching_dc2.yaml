@@ -27,14 +27,16 @@ encoder:
   t_embed_dim: 64
   velocity_hidden_dim: 256   #originally 128
   num_cosmo_params: 6
-  lr: 1e-5 #originally 1e-4
+  lr: 1e-4
+  lr_milestones: [10]
+  lr_gamma: 0.1
   num_ode_steps: 20
   num_samples_for_mode: 10
   ode_method: midpoint
 
 train:
   trainer:
-    max_epochs: 300 #originally 200
+    max_epochs: 500
     accelerator: gpu
     devices: 1
     log_every_n_steps: 10
@@ -52,5 +54,5 @@ train:
       save_top_k: 1
     early_stopping:
       monitor: val_loss
-      patience: 100 #originally 50
+      patience: 100
       mode: min
