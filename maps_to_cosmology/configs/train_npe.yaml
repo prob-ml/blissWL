@@ -18,6 +18,7 @@ convergence_maps:
   val_split: 0.1
   test_split: 0.1
   standardize_params: false
+  smoothing_sigma: 1.0
 
 encoder:
   _target_: maps_to_cosmology.encoder.Encoder
