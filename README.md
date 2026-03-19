@@ -103,7 +103,11 @@ This module implements inference of cosmological parameters from weak lensing co
 Generate synthetic convergence maps using the log-normal forward model from [`sbi_lens`](https://github.com/DifferentiableUniverseInitiative/sbi_lens):
 
 ```bash
+# LSST Y10 settings (default: 256x256, 10° field)
 python -m maps_to_cosmology.generate_maps
+
+# DC2 settings (64x40, 0.91° field)
+python -m maps_to_cosmology.generate_maps --config-name=generate_dc2_lognormal
 ```
 
 Override defaults with Hydra syntax:
@@ -114,16 +118,24 @@ python -m maps_to_cosmology.generate_maps num_maps=50000 output_dir=/path/to/out
 
 ### Train the encoder
 
-Train with NPE (default):
+Train with NPE:
 
 ```bash
-python -m maps_to_cosmology.train
+# LSST Y10
+python -m maps_to_cosmology.train --config-name=train_npe_lsst_y10
+
+# DC2
+python -m maps_to_cosmology.train --config-name=train_npe_dc2
 ```
 
 Train with flow matching:
 
 ```bash
-python -m maps_to_cosmology.train --config-name=train_flowmatching
+# LSST Y10
+python -m maps_to_cosmology.train --config-name=train_flowmatching_lsst_y10
+
+# DC2
+python -m maps_to_cosmology.train --config-name=train_flowmatching_dc2
 ```
 
 Training logs are saved to TensorBoard. View with:
