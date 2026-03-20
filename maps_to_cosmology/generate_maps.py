@@ -173,7 +173,7 @@ def main(cfg: DictConfig) -> None:
         b=cfg.b,
         z0=cfg.z0,
         model_type=cfg.model_type,
-        lognormal_shifts="LSSTY10",
+        lognormal_shifts=cfg.lognormal_shifts,
         with_noise=cfg.with_noise,
     )
 
