@@ -30,7 +30,9 @@ class SaveBestScatterplot(Callback):
                 plt.close(fig)
 
 
-@hydra.main(version_base=None, config_path="configs", config_name="train_flowmatching")
+@hydra.main(
+    version_base=None, config_path="configs", config_name="train_flowmatching_lsst_y10"
+)
 def main(cfg: DictConfig) -> None:
     """Train the neural posterior estimation model."""
     seed_everything(cfg.seed, workers=True)
@@ -43,6 +45,7 @@ def main(cfg: DictConfig) -> None:
         val_split=cfg.convergence_maps.val_split,
         test_split=cfg.convergence_maps.test_split,
         standardize_params=cfg.convergence_maps.standardize_params,
+        smoothing_sigma=cfg.convergence_maps.get("smoothing_sigma", None),
         seed=cfg.seed,
     )
 

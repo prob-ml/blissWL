@@ -5,6 +5,7 @@ import torch
 from einops import rearrange
 from lightning import LightningDataModule
 from torch.utils.data import DataLoader, Dataset, random_split
+from torchvision.transforms.functional import gaussian_blur
 from tqdm.auto import tqdm
 
 
@@ -43,7 +44,8 @@ class ConvergenceMapsModule(LightningDataModule):
         test_split: float = 0.1,
         seed: int = 42,
         standardize_params: bool = True,
-        eps: float = 1e-8
+        eps: float = 1e-8,
+        smoothing_sigma: float | None = None,
     ):
         """Initialize data module.
 
@@ -54,6 +56,7 @@ class ConvergenceMapsModule(LightningDataModule):
             val_split: Fraction of data to use for validation
             test_split: Fraction of data to use for testing
             seed: Random seed for train/val/test split
+            smoothing_sigma: Gaussian smoothing sigma in pixels. None means no smoothing.
         """
         super().__init__()
         self.save_hyperparameters()
@@ -66,6 +69,7 @@ class ConvergenceMapsModule(LightningDataModule):
 
         self.standardize_params = standardize_params
         self.eps = eps
+        self.smoothing_sigma = smoothing_sigma
 
         self.train_dataset = None
         self.val_dataset = None
@@ -127,6 +131,18 @@ class ConvergenceMapsModule(LightningDataModule):
         print(f"Maps shape: {all_maps.shape}")
         print(f"Params shape: {all_params.shape}")
 
+        # Apply Gaussian smoothing if configured
+        if self.smoothing_sigma is not None:
+            sigma = self.smoothing_sigma
+            kernel_size = 2 * round(2 * sigma) + 1
+            print(f"Applying Gaussian smoothing: σ={sigma}, kernel_size={kernel_size}")
+            # [N, H, W, C] -> [N, C, H, W] for gaussian_blur
+            all_maps = rearrange(all_maps, "n h w c -> n c h w")
+            all_maps = gaussian_blur(
+                all_maps, kernel_size=[kernel_size, kernel_size], sigma=[sigma, sigma]
+            )
+            all_maps = rearrange(all_maps, "n c h w -> n h w c")
+
         # Create full dataset and split into train/val/test
         full_dataset = ConvergenceMapsDataset(all_maps, all_params)
         self.raw_params = full_dataset.params.clone()
@@ -151,7 +167,9 @@ class ConvergenceMapsModule(LightningDataModule):
             train_params = train_params.detach().cpu()
             self.param_mean = train_params.mean(dim=0)
             self.param_std = train_params.std(dim=0, unbiased=False).clamp_min(self.eps)
-            full_dataset.params = (full_dataset.params.detach().cpu() - self.param_mean) / self.param_std
+            full_dataset.params = (
+                full_dataset.params.detach().cpu() - self.param_mean
+            ) / self.param_std
 
             print("Standardized cosmological parameters using TRAIN stats.")
             print("Train mean:", self.param_mean)

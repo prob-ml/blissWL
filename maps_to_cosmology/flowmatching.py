@@ -19,7 +19,7 @@ class TimeEncoder(nn.Module):
         # TODO: Build an MLP that maps (B, 1) -> (B, t_embed_dim).
         # Suggested: Linear(1, t_embed_dim // 2) -> SiLU -> Linear(t_embed_dim // 2, t_embed_dim)
         self.net = nn.Sequential(
-            nn.Linear(1, t_embed_dim //2),
+            nn.Linear(1, t_embed_dim // 2),
             nn.SiLU(),
             nn.Linear(t_embed_dim // 2, t_embed_dim),
         )
@@ -63,12 +63,13 @@ class FlowMatching(LightningModule):
     def __init__(
         self,
         num_bins: int,
-        map_slen: int,
         x_embed_dim: int,
         t_embed_dim: int,
         velocity_hidden_dim: int,
         num_cosmo_params: int,
         lr: float,
+        lr_milestones: list[int] | None = None,
+        lr_gamma: float = 0.1,
         num_ode_steps: int = 20,
         num_samples_for_mode: int = 10,
         ode_method: str = "midpoint",
@@ -76,6 +77,8 @@ class FlowMatching(LightningModule):
         super().__init__()
         self.save_hyperparameters()
         self.lr = lr
+        self.lr_milestones = lr_milestones or []
+        self.lr_gamma = lr_gamma
         self.num_cosmo_params = num_cosmo_params
         self.num_ode_steps = num_ode_steps
         self.num_samples_for_mode = num_samples_for_mode
@@ -84,7 +87,6 @@ class FlowMatching(LightningModule):
 
         self.map_encoder = ResNet(
             num_bins=num_bins,
-            map_slen=map_slen,
             output_dim=x_embed_dim,
         )
         self.time_encoder = TimeEncoder(t_embed_dim=t_embed_dim)
@@ -146,7 +148,9 @@ class FlowMatching(LightningModule):
     def _integrate_ode(self, x_embedding):
         """Integrate ODE from t=0 (noise) to t=1 (data)."""
         # 1. Sample z ~ N(0, I) of shape (B, num_cosmo_params) at t=0.
-        z = torch.randn(x_embedding.shape[0], self.num_cosmo_params, device=x_embedding.device)
+        z = torch.randn(
+            x_embedding.shape[0], self.num_cosmo_params, device=x_embedding.device
+        )
         # 2. Compute dt = 1 / self.num_ode_steps.
         dt = 1 / self.num_ode_steps
         # 3. For each step i in range(self.num_ode_steps):
@@ -155,7 +159,9 @@ class FlowMatching(LightningModule):
         #      z = self._sample_path(z, x_embedding, t, t_next)
         for i in range(self.num_ode_steps):
             t = torch.full((x_embedding.shape[0], 1), i * dt, device=x_embedding.device)
-            t_next = torch.full((x_embedding.shape[0], 1), (i + 1) * dt, device=x_embedding.device)
+            t_next = torch.full(
+                (x_embedding.shape[0], 1), (i + 1) * dt, device=x_embedding.device
+            )
             z = self._sample_path(z, x_embedding, t, t_next)
         # 4. Return z at t=1, shape (B, num_cosmo_params).
         return z
@@ -243,4 +249,10 @@ class FlowMatching(LightningModule):
         self.test_pcc.reset()
 
     def configure_optimizers(self):
-        return torch.optim.Adam(self.parameters(), lr=self.lr, weight_decay=1e-4)
+        optimizer = torch.optim.Adam(self.parameters(), lr=self.lr, weight_decay=1e-4)
+        if not self.lr_milestones:
+            return optimizer
+        scheduler = torch.optim.lr_scheduler.MultiStepLR(
+            optimizer, milestones=self.lr_milestones, gamma=self.lr_gamma
+        )
+        return {"optimizer": optimizer, "lr_scheduler": scheduler}

@@ -22,12 +22,13 @@ gals_per_arcmin2: 27. # Galaxy density
 nbins: 5              # Number of redshift bins
 
 # Redshift distribution parameters (Smail distribution)
-a: 2.0
-b: 0.68
-z0: 0.11
+a: 1.9282
+b: 1.3636
+z0: 0.9140
 
 # Simulation settings
 model_type: lognormal
+lognormal_shifts: DC2
 with_noise: false
 
 # Prior distributions for LambdaCDM parameters (WMAP-7 centers, LSST Y10 scales)

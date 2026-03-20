@@ -27,6 +27,7 @@ z0: 0.11
 
 # Simulation settings
 model_type: lognormal
+lognormal_shifts: LSSTY10
 with_noise: false
 
 # Prior distributions for LambdaCDM parameters

@@ -1,0 +1,55 @@
+defaults:
+  - override hydra/job_logging: none
+
+seed: 42
+
+hydra:
+  run:
+    dir: .
+  output_subdir: null
+
+paths:
+  data_dir: /data/scratch/convergence_maps/lsst_y10_lognormal_with_noise
+  output: maps_to_cosmology
+
+convergence_maps:
+  batch_size: 32
+  num_workers: 4
+  val_split: 0.1
+  test_split: 0.1
+  standardize_params: false
+
+encoder:
+  _target_: maps_to_cosmology.flowmatching.FlowMatching
+  num_bins: 5
+  x_embed_dim: 128
+  t_embed_dim: 64
+  velocity_hidden_dim: 256   #originally 128
+  num_cosmo_params: 6
+  lr: 1e-4
+  num_ode_steps: 20
+  num_samples_for_mode: 10
+  ode_method: midpoint
+
+train:
+  trainer:
+    max_epochs: 500
+    accelerator: gpu
+    devices: 1
+    log_every_n_steps: 10
+  logger:
+    _target_: lightning.pytorch.loggers.TensorBoardLogger
+    save_dir: ${paths.output}
+    name: results
+    version: ${now:%m-%d|%H:%M:%S}
+    default_hp_metric: false
+  callbacks:
+    checkpoint:
+      filename: "flowmatching_{epoch:02d}"
+      monitor: val_loss
+      mode: min
+      save_top_k: 1
+    early_stopping:
+      monitor: val_loss
+      patience: 100
+      mode: min
