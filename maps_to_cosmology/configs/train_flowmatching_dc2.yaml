@@ -17,7 +17,7 @@ convergence_maps:
   num_workers: 4
   val_split: 0.1
   test_split: 0.1
-  standardize_params: false
+  standardize_params: true
   smoothing_sigma: 1.0
 
 encoder:
