@@ -1,11 +1,11 @@
 # Path to trained model checkpoint
-ckpt: /nfs/turbo/lsa-regier/scratch/descwl/checkpoints/trained_encoder_descwl_setting1.ckpt
+ckpt: /nfs/turbo/lsa-regier/scratch/descwl/checkpoints/trained_encoder_1_1.ckpt
 
 # Path to cached test data
-cached_data_path: /nfs/turbo/lsa-regier/scratch/descwl/setting1
+cached_data_path: /nfs/turbo/lsa-regier/scratch/descwl/setting1_1
 
 # Output file path
-output: npe_credible_intervals_setting1.pt
+output: npe_credible_intervals_setting1_1.pt
 
 # Number of files to process per GPU batch (reduce if OOM)
 files_per_chunk: 16
