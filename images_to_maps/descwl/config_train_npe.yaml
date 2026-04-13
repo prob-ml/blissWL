@@ -11,7 +11,7 @@ hydra:
         dir: .
 
 paths:
-    cached_data: /nfs/turbo/lsa-regier/scratch/descwl/setting1
+    cached_data: /nfs/turbo/lsa-regier/scratch/descwl/setting1_1
     output: images_to_maps
 
 cached_simulator:
