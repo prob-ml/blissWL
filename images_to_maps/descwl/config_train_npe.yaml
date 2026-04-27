@@ -11,7 +11,7 @@ hydra:
         dir: .
 
 paths:
-    cached_data: /nfs/turbo/lsa-regier/scratch/descwl/setting1
+    cached_data: /nfs/turbo/lsa-regier/scratch/descwl/setting1_1
     output: images_to_maps
 
 cached_simulator:
@@ -56,10 +56,10 @@ encoder:
         tile_slen: 2048
         factors: ${variational_factors}
     optimizer_params:
-        lr: 1e-3
+        lr: 1e-4
     scheduler_params:
-        milestones: [16]
-        gamma: 0.1
+        milestones: []
+        gamma: 1.0
     loss_plots_location: ${paths.output}/${train.trainer.logger.name}/${train.trainer.logger.version}/loss_plots
     mode_metrics:
         _target_: torchmetrics.MetricCollection
