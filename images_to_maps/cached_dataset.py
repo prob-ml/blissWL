@@ -163,6 +163,7 @@ class CachedSimulatedDataModule(L.LightningDataModule):
         shuffle_file_order: bool = True,
         seed: int = 0,
         splits_type: str = "percent",
+        exclude_file_list_path: str | None = None,
     ):
         super().__init__()
 
@@ -176,6 +177,9 @@ class CachedSimulatedDataModule(L.LightningDataModule):
         self.shuffle_file_order = shuffle_file_order
         self.seed = seed
         self.splits_type = splits_type
+        self.exclude_file_list_path = (
+            pathlib.Path(exclude_file_list_path) if exclude_file_list_path else None
+        )
 
         self.file_paths = None
         self.slices = None
@@ -218,12 +222,39 @@ class CachedSimulatedDataModule(L.LightningDataModule):
 
         raise RuntimeError(f"setup skips stage {stage}")
 
+    def _load_excluded_file_names(self) -> set[str]:
+        if self.exclude_file_list_path is None:
+            return set()
+        if not self.exclude_file_list_path.exists():
+            raise FileNotFoundError(
+                f"exclude_file_list_path does not exist: {self.exclude_file_list_path}"
+            )
+        excluded = set()
+        with self.exclude_file_list_path.open() as f:
+            for line in f:
+                stripped = line.split("#", 1)[0].strip()
+                if not stripped:
+                    continue
+                excluded.add(os.path.basename(stripped))
+        return excluded
+
     def _load_file_paths_and_slices(self):
         file_names = [
             f
             for f in sorted(os.listdir(str(self.cached_data_path)))
             if f.endswith(".pt")
         ]
+        excluded_file_names = self._load_excluded_file_names()
+        if excluded_file_names:
+            before_count = len(file_names)
+            file_names = [f for f in file_names if f not in excluded_file_names]
+            logger = logging.getLogger("CachedSimulatedDataModule")
+            logger.info(
+                "Excluded %d cached files listed in %s; %d files remain",
+                before_count - len(file_names),
+                self.exclude_file_list_path,
+                len(file_names),
+            )
         if self.shuffle_file_order:
             random.shuffle(file_names)
         if self.subset_fraction:

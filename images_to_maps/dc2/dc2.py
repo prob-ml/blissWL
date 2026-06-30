@@ -48,6 +48,7 @@ class LensingDC2DataModule(CachedSimulatedDataModule):
         train_transforms: List,
         shuffle_file_order: bool,
         splits_type: str = "percent",
+        exclude_file_list_path: str | None = None,
         **kwargs,
     ):
         super().__init__(
@@ -60,6 +61,7 @@ class LensingDC2DataModule(CachedSimulatedDataModule):
             subset_fraction=None,
             shuffle_file_order=shuffle_file_order,
             splits_type=splits_type,
+            exclude_file_list_path=exclude_file_list_path,
         )
 
         self.dc2_image_dir = dc2_image_dir
@@ -444,7 +446,11 @@ class LensingDC2Catalog:
     def read_catalog(cls, cat_path, wcs, height, width, **kwargs):
         """Read and process catalog from pickle file."""
         catalog = pd.read_pickle(cat_path)
+        return cls.from_dataframe(catalog, wcs, height, width, **kwargs)
 
+    @classmethod
+    def from_dataframe(cls, catalog, wcs, height, width, **kwargs):
+        """Read and process catalog from an in-memory dataframe."""
         galid = torch.from_numpy(catalog["galaxy_id"].values)
         ra = torch.from_numpy(catalog["ra"].values)
         dec = torch.from_numpy(catalog["dec"].values)
