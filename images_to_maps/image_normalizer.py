@@ -55,6 +55,6 @@ class PsfAsImage(torch.nn.Module):
     def get_input_tensor(self, batch):
         assert "psf_params" in batch, "PsfAsImage specified but psf params not provided"
         n, c, h, w = batch["images"].shape
-        psf_params = batch["psf_params"]
+        psf_params = torch.nan_to_num(batch["psf_params"])
         psf_params = psf_params.view(n, c, self.num_psf_params, 1, 1)
         return psf_params.expand(n, c, self.num_psf_params, h, w)
