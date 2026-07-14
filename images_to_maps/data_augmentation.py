@@ -3,6 +3,14 @@ import random
 import torch
 
 
+TILE_MASK_KEYS = (
+    "loss_mask",
+    "interior_mask",
+    "nominal_patch_tile_mask",
+    "image_valid_tile_mask",
+)
+
+
 class RemoveAnacalData:
     """Remove anacal_data field from batch to avoid collation errors with None values."""
 
@@ -39,12 +47,18 @@ class LensingRotateFlipTransform(torch.nn.Module):
         datum_out["tile_catalog"] = {
             k: v.rot90(self.rotate_id, [0, 1]) for k, v in d.items()
         }
+        for key in TILE_MASK_KEYS:
+            if key in datum:
+                datum_out[key] = datum[key].rot90(self.rotate_id, [0, 1])
 
         # apply flip
         if self.flip_id == 1:
             datum_out["images"] = datum_out["images"].flip([1])
             d = datum_out["tile_catalog"]
             datum_out["tile_catalog"] = {k: v.flip([0]) for k, v in d.items()}
+            for key in TILE_MASK_KEYS:
+                if key in datum_out:
+                    datum_out[key] = datum_out[key].flip([0])
 
         # shear requires special logic
         if all(k in datum["tile_catalog"] for k in ("shear_1", "shear_2")):
