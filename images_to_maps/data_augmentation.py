@@ -10,6 +10,32 @@ TILE_MASK_KEYS = (
     "image_valid_tile_mask",
 )
 
+# Order of the last dim of psf_params, from get_bands_flux_and_psf:
+# [Ixx, Iyy, Ixy, fwhm] in coadd pixel coordinates, per band.
+PSF_IXX, PSF_IYY, PSF_IXY = 0, 1, 2
+N_PSF_PARAMS = 4
+
+
+def rotate_flip_psf_params(psf_params, rotate_id, flip_id):
+    """PSF params of an image rotated rotate_id x 90 deg, then flipped if flip_id.
+
+    Each 90 deg rotation swaps Ixx and Iyy and negates Ixy; a flip along either
+    axis negates Ixy; fwhm is unchanged.  The rule holds whichever pixel axis
+    is called x and in either rotation direction.  Returns a new tensor.
+    """
+    if psf_params.shape[-1] != N_PSF_PARAMS:
+        raise ValueError(
+            f"psf_params has {psf_params.shape[-1]} params per band; expected "
+            f"{N_PSF_PARAMS} ([Ixx, Iyy, Ixy, fwhm])"
+        )
+    out = psf_params.clone()
+    if rotate_id % 2 == 1:
+        out[..., PSF_IXX] = psf_params[..., PSF_IYY]
+        out[..., PSF_IYY] = psf_params[..., PSF_IXX]
+    if (rotate_id + flip_id) % 2 == 1:
+        out[..., PSF_IXY] = -psf_params[..., PSF_IXY]
+    return out
+
 
 class RemoveAnacalData:
     """Remove anacal_data field from batch to avoid collation errors with None values."""
@@ -38,8 +64,11 @@ class LensingRotateFlipTransform(torch.nn.Module):
                 self.flip_id = random.randint(0, 1)
             self.seen_states.add((self.rotate_id, self.flip_id))
 
-        # problematic if the psf isn't rotationally invariant
-        datum_out = {"psf_params": datum["psf_params"]}
+        datum_out = {
+            "psf_params": rotate_flip_psf_params(
+                datum["psf_params"], self.rotate_id, self.flip_id
+            )
+        }
 
         # apply rotation
         datum_out["images"] = datum["images"].rot90(self.rotate_id, [1, 2])
@@ -60,7 +89,9 @@ class LensingRotateFlipTransform(torch.nn.Module):
                 if key in datum_out:
                     datum_out[key] = datum_out[key].flip([0])
 
-        # shear requires special logic
+        # shear requires special logic; other spin-2 tile fields (shear*_sum,
+        # shear1_shear2, ellip_*) are moved but not sign-flipped, so they are
+        # not valid training targets after this transform
         if all(k in datum["tile_catalog"] for k in ("shear_1", "shear_2")):
             shear1 = datum_out["tile_catalog"]["shear_1"]
             shear2 = datum_out["tile_catalog"]["shear_2"]
