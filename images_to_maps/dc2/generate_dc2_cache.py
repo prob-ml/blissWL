@@ -1,10 +1,25 @@
-"""Generate padded DC2 cache crops for interior-only mass-map training.
+"""Generate padded DC2 crops for interior-only mass-map training.
 
 This generator writes overlapping ``2048 x 2048`` image crops.  Each crop has
 an ``8 x 8`` tile target map, but only the central ``4 x 4`` tiles are meant to
 contribute to loss/evaluation by default.  The two-tile image border is context.
 With the default ``256 x 256`` target tiles, this gives ``4 x 4`` crops per
 nominal DC2 patch.
+
+Images are read from the NERSC DC2 layout (``paths.dc2``).  Target maps are
+built from the DC2 truth and object tables joined to CosmoDC2 lensing fields.
+The join is done once per tract and held in memory, so each crop only filters
+the merged catalogs of the tracts it overlaps.  Image pixels and target maps
+are written together to one ``.pt`` file per crop in ``cached_data_path``.
+
+The tracts to generate are read from ``surveys.dc2.tracts`` in the config and
+can be overridden with ``--tracts``.  Existing crop files are skipped unless
+``--overwrite`` is passed.
+
+With ``--write-catalogs``, each merged tract catalog is also saved as
+``tract_<tract>.parquet`` (default directory ``/nfs/turbo/lsa-regier/dc2_wl_catalog``)
+for analysis notebooks.  The selected tracts are always written; neighboring
+tracts are written when crops need them.
 
 The output datum schema extends the existing DC2 cache schema with:
 
@@ -14,15 +29,15 @@ The output datum schema extends the existing DC2 cache schema with:
 * crop WCS/patch-position metadata for stitched inference.
 
 Examples:
-    # Small smoke test.
-    python -u images_to_maps/dc2/generate_padded_nersc_cache.py \
-        --tracts 3828 --max-crops 2 --output /tmp/dc2_padded_smoke
+    # All tracts listed in the config.
+    python -u images_to_maps/dc2/generate_dc2_cache.py
 
-    # One full tract, skipping true survey-edge crops with incomplete context.
-    python -u images_to_maps/dc2/generate_padded_nersc_cache.py \
-        --tracts 3828 \
-        --output /nfs/turbo/lsa-regier/dc2_wl_padded_tract3828_test \
-        --complete-context-only
+    # Also save the merged per-tract catalogs to the default catalog directory.
+    python -u images_to_maps/dc2/generate_dc2_cache.py --write-catalogs
+
+    # Small smoke test.
+    python -u images_to_maps/dc2/generate_dc2_cache.py \
+        --tracts 3828 --max-crops 2 --output /tmp/dc2_padded_smoke
 """
 
 from __future__ import annotations
@@ -31,52 +46,476 @@ import argparse
 import json
 import logging
 import os
+import sys
 import time
 from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
 
+import GCRCatalogs
 import numpy as np
 import pandas as pd
+import pyarrow.parquet as pq
 import torch
 from astropy.io import fits
 from astropy.wcs import WCS
+from GCRCatalogs import GCRQuery
+from omegaconf import OmegaConf
 from scipy.ndimage import map_coordinates
 
 from images_to_maps.dc2.dc2 import LensingDC2Catalog, LensingDC2DataModule
-from images_to_maps.dc2.generate_merged_catalog_cache import (
-    DEFAULT_MERGED_CATALOG_CACHE,
-    build_catalog_from_merged_cache,
-    merged_catalog_path,
-    write_merged_catalog,
-)
-from images_to_maps.dc2.generate_nersc_cache import (
-    BANDS,
-    DEFAULT_CONFIG,
-    apply_config_defaults,
-    band_root,
-    bounds_overlap,
-    build_lensing_dataframe,
-    coadd_path,
-    filter_truth_to_bounds,
-    finalize_tile_dict,
-    format_duration,
-    format_eta,
-    iter_patch_manifest,
-    load_cached_tract,
-    load_cosmodc2_catalog,
-    overlapping_truth_tracts,
-    patch_sky_bounds,
-    put_nominal_tract_first,
-    read_object_tract,
-    read_truth_tract,
-    setup_logging,
-    truth_tract_bounds,
-)
 from images_to_maps.dc2.utils import wcs_from_wcs_header_str
+from images_to_maps.utils.weighted_avg_ellip import compute_weighted_avg_ellip
 
-DEFAULT_OUTPUT = Path("/nfs/turbo/lsa-regier/dc2_wl_padded")
+BANDS = ("u", "g", "r", "i", "z", "y")
+DEFAULT_CONFIG = Path(__file__).with_name("config_train_npe.yaml")
+DEFAULT_DC2_NERSC_ROOT = Path("/nfs/turbo/lsa-regier/dc2_nersc")
+DEFAULT_COSMODC2_ROOT = Path(
+    "/nfs/turbo/lsa-regier/lsstdesc-public/dc2/cosmoDC2_v1.1.4"
+)
+DEFAULT_OUTPUT = Path("/nfs/turbo/lsa-regier/dc2_wl")
+DEFAULT_CATALOG_OUTPUT = Path("/nfs/turbo/lsa-regier/dc2_wl_catalog")
+DEFAULT_REDSHIFT_QUANTILES = [0.00, 0.762988, 1.120420, 1.592735]
 COPY_WCS_ATOL_DEG = 1.0e-8
+
+TRUTH_COLUMNS = [
+    "truth_type",
+    "ra",
+    "dec",
+    "redshift",
+    "flux_u",
+    "flux_g",
+    "flux_r",
+    "flux_i",
+    "flux_z",
+    "flux_y",
+    "tract",
+    "patch",
+    "cosmodc2_hp",
+    "cosmodc2_id",
+    "match_objectId",
+    "is_unique_truth_entry",
+]
+OBJECT_COLUMNS = [
+    "objectId",
+    "Ixx_pixel",
+    "Iyy_pixel",
+    "Ixy_pixel",
+    *[
+        f"{moment}PSF_pixel_{band}"
+        for moment in ("Ixx", "Iyy", "Ixy")
+        for band in BANDS
+    ],
+    *[f"psf_fwhm_{band}" for band in BANDS],
+]
+COSMO_COLUMNS = [
+    "galaxy_id",
+    "ra",
+    "dec",
+    "ellipticity_1_true",
+    "ellipticity_2_true",
+    "ellipticity_1_true_dc2",
+    "ellipticity_2_true_dc2",
+    "shear_1",
+    "shear_2",
+    "convergence",
+]
+
+
+def format_duration(seconds: float) -> str:
+    seconds = max(0, int(round(seconds)))
+    hours, remainder = divmod(seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    if hours:
+        return f"{hours}h{minutes:02d}m{seconds:02d}s"
+    if minutes:
+        return f"{minutes}m{seconds:02d}s"
+    return f"{seconds}s"
+
+
+def format_eta(start_time: float, completed: int, total: int) -> str:
+    if completed <= 0 or total <= completed:
+        return "unknown" if completed <= 0 else "0s"
+    elapsed = time.monotonic() - start_time
+    seconds_per_item = elapsed / completed
+    return format_duration(seconds_per_item * (total - completed))
+
+
+def setup_logging(log_file: Path | None) -> None:
+    handlers: list[logging.Handler] = [logging.StreamHandler(sys.stdout)]
+    if log_file is not None:
+        log_file.parent.mkdir(parents=True, exist_ok=True)
+        handlers.append(logging.FileHandler(log_file))
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(message)s",
+        handlers=handlers,
+        force=True,
+    )
+
+
+def cfg_select(cfg, key: str, default=None):
+    value = OmegaConf.select(cfg, key, default=default)
+    if value is None:
+        return default
+    return (
+        OmegaConf.to_container(value, resolve=True)
+        if OmegaConf.is_config(value)
+        else value
+    )
+
+
+def apply_config_defaults(args) -> None:
+    """Fill unset CLI options from the training config."""
+    cfg = OmegaConf.load(args.config)
+    OmegaConf.resolve(cfg)
+
+    if args.dc2_root is None:
+        args.dc2_root = Path(cfg_select(cfg, "paths.dc2", DEFAULT_DC2_NERSC_ROOT))
+    if args.cosmodc2_root is None:
+        args.cosmodc2_root = Path(
+            cfg_select(cfg, "paths.cosmodc2", DEFAULT_COSMODC2_ROOT)
+        )
+    if args.output is None:
+        args.output = Path(
+            cfg_select(
+                cfg,
+                "surveys.dc2.cached_data_path",
+                cfg_select(cfg, "paths.dc2_cache", DEFAULT_OUTPUT),
+            )
+        )
+    if args.tracts is None:
+        args.tracts = cfg_select(cfg, "surveys.dc2.tracts", None)
+    if args.tile_slen is None:
+        args.tile_slen = int(cfg_select(cfg, "surveys.dc2.tile_slen", 256))
+    if args.avg_ellip_kernel_size is None:
+        args.avg_ellip_kernel_size = int(
+            cfg_select(cfg, "surveys.dc2.avg_ellip_kernel_size", 15)
+        )
+    if args.avg_ellip_kernel_sigma is None:
+        args.avg_ellip_kernel_sigma = int(
+            cfg_select(cfg, "surveys.dc2.avg_ellip_kernel_sigma", 15)
+        )
+    if args.redshift_quantiles is None:
+        args.redshift_quantiles = list(
+            cfg_select(
+                cfg, "surveys.dc2.redshift_quantiles", DEFAULT_REDSHIFT_QUANTILES
+            )
+        )
+
+
+# --- DC2 NERSC inputs --------------------------------------------------------
+
+
+def band_root(dc2_root: Path, band: str) -> Path:
+    if band == "u":
+        return dc2_root / "run2.2i-dr6-v2-u" / "deepCoadd" / band
+    return dc2_root / "run2.2i-dr6-v2-grizy" / "deepCoadd-results" / band
+
+
+def coadd_path(dc2_root: Path, band: str, tract: int, patch: str) -> Path:
+    if band == "u":
+        return band_root(dc2_root, band) / str(tract) / f"{patch}.fits"
+    return (
+        band_root(dc2_root, band)
+        / str(tract)
+        / patch
+        / f"calexp-{band}-{tract}-{patch}.fits"
+    )
+
+
+def truth_path(dc2_root: Path, tract: int) -> Path:
+    return (
+        dc2_root
+        / "truth_merged_summary_v1-0-0"
+        / "match_dr6_v2"
+        / f"truth_tract{tract}.parquet"
+    )
+
+
+def read_truth_tract(dc2_root: Path, tract: int) -> pd.DataFrame:
+    truth = pd.read_parquet(truth_path(dc2_root, tract), columns=TRUTH_COLUMNS)
+    return truth[(truth["truth_type"] == 1) & (truth["cosmodc2_id"] >= 0)].copy()
+
+
+def read_object_tract(dc2_root: Path, tract: int) -> pd.DataFrame:
+    path = dc2_root / "object_dpdd_only" / f"object_dpdd_tract{tract}.parquet"
+    return pd.read_parquet(path, columns=OBJECT_COLUMNS)
+
+
+def truth_tract_bounds(dc2_root: Path) -> dict[int, tuple[float, float, float, float]]:
+    """RA/Dec bounds of every truth tract, from parquet row-group statistics."""
+    bounds = {}
+    truth_dir = dc2_root / "truth_merged_summary_v1-0-0" / "match_dr6_v2"
+    for path in sorted(truth_dir.glob("truth_tract*.parquet")):
+        tract = int(path.stem.replace("truth_tract", ""))
+        metadata = pq.ParquetFile(path).metadata
+        column_indices = {
+            metadata.schema.column(i).name: i for i in range(metadata.num_columns)
+        }
+        ra_idx = column_indices["ra"]
+        dec_idx = column_indices["dec"]
+        ra_min = dec_min = float("inf")
+        ra_max = dec_max = float("-inf")
+        for row_group_idx in range(metadata.num_row_groups):
+            row_group = metadata.row_group(row_group_idx)
+            ra_stats = row_group.column(ra_idx).statistics
+            dec_stats = row_group.column(dec_idx).statistics
+            if ra_stats is None or dec_stats is None:
+                raise ValueError(f"Missing RA/Dec parquet statistics for {path}")
+            ra_min = min(ra_min, float(ra_stats.min))
+            ra_max = max(ra_max, float(ra_stats.max))
+            dec_min = min(dec_min, float(dec_stats.min))
+            dec_max = max(dec_max, float(dec_stats.max))
+        bounds[tract] = (ra_min, ra_max, dec_min, dec_max)
+    return bounds
+
+
+def patch_sky_bounds(
+    wcs_header_str: str, height: int, width: int
+) -> tuple[float, float, float, float]:
+    wcs = wcs_from_wcs_header_str(wcs_header_str)
+    xs = np.array([0, width, 0, width, width / 2])
+    ys = np.array([0, 0, height, height, height / 2])
+    ra, dec = wcs.pixel_to_world_values(xs, ys)
+    return (
+        float(np.nanmin(ra)),
+        float(np.nanmax(ra)),
+        float(np.nanmin(dec)),
+        float(np.nanmax(dec)),
+    )
+
+
+def bounds_overlap(
+    a: tuple[float, float, float, float],
+    b: tuple[float, float, float, float],
+    padding: float = 0.0,
+) -> bool:
+    a_ra_min, a_ra_max, a_dec_min, a_dec_max = a
+    b_ra_min, b_ra_max, b_dec_min, b_dec_max = b
+    return (
+        a_ra_min <= b_ra_max + padding
+        and a_ra_max >= b_ra_min - padding
+        and a_dec_min <= b_dec_max + padding
+        and a_dec_max >= b_dec_min - padding
+    )
+
+
+def overlapping_truth_tracts(
+    patch_bounds: tuple[float, float, float, float],
+    all_truth_bounds: dict[int, tuple[float, float, float, float]],
+    padding: float,
+) -> list[int]:
+    return [
+        tract
+        for tract, tract_bounds in sorted(all_truth_bounds.items())
+        if bounds_overlap(patch_bounds, tract_bounds, padding=padding)
+    ]
+
+
+def put_nominal_tract_first(tracts: list[int], nominal_tract: int) -> list[int]:
+    if nominal_tract not in tracts:
+        return tracts
+    return [nominal_tract] + [tract for tract in tracts if tract != nominal_tract]
+
+
+# --- Merged truth/object/CosmoDC2 catalogs -----------------------------------
+
+
+def load_cosmodc2_catalog(cosmodc2_root: Path):
+    # The catalog name is resolved through lsstdesc-gcr-catalogs, while the HDF5 data
+    # root is supplied explicitly so this works with the relocated public archive.
+    GCRCatalogs.set_root_dir(str(cosmodc2_root.parent))
+    return GCRCatalogs.load_catalog(
+        "desc_cosmodc2", {"catalog_root_dir": str(cosmodc2_root)}
+    )
+
+
+def read_cosmo_rows(cosmo_cat, truth: pd.DataFrame) -> pd.DataFrame:
+    ids = truth["cosmodc2_id"].dropna().astype(np.int64).unique()
+    hpix = truth["cosmodc2_hp"].dropna().astype(np.int64).unique()
+    hpix = hpix[hpix >= 0]
+    if len(ids) == 0:
+        return pd.DataFrame(columns=COSMO_COLUMNS)
+
+    filters = [GCRQuery((lambda x, selected=ids: np.isin(x, selected), "galaxy_id"))]
+    native_filters = []
+    if len(hpix) > 0:
+        native_filters = [
+            GCRQuery((lambda x, selected=hpix: np.isin(x, selected), "healpix_pixel"))
+        ]
+
+    cosmo = cosmo_cat.get_quantities(
+        quantities=COSMO_COLUMNS,
+        filters=filters,
+        native_filters=native_filters,
+    )
+    # GCR returns quantities in arbitrary order; fix it so written catalogs are stable.
+    return pd.DataFrame(cosmo, columns=COSMO_COLUMNS)
+
+
+def build_lensing_dataframe(dc2_root: Path, cosmo_cat, tract: int) -> pd.DataFrame:
+    """Join one tract's truth and object tables to CosmoDC2 lensing fields."""
+    truth = read_truth_tract(dc2_root, tract)
+    truth["source_truth_tract"] = tract
+    truth.drop_duplicates(subset=["cosmodc2_id"], inplace=True)
+    if truth.empty:
+        return pd.DataFrame()
+
+    object_df = read_object_tract(dc2_root, tract)
+    object_df = object_df.drop_duplicates(subset=["objectId"]).copy()
+    object_df["source_object_tract"] = tract
+
+    merged = truth.merge(
+        object_df,
+        left_on="match_objectId",
+        right_on="objectId",
+        how="left",
+        suffixes=("", "_object"),
+    )
+
+    cosmo = read_cosmo_rows(cosmo_cat, truth)
+    merged = merged.merge(
+        cosmo,
+        left_on="cosmodc2_id",
+        right_on="galaxy_id",
+        how="left",
+        suffixes=("", "_cosmo"),
+    )
+    merged = merged[~merged["galaxy_id"].isna()].copy()
+    return merged
+
+
+def filter_catalog_to_bounds(
+    catalog: pd.DataFrame,
+    bounds: tuple[float, float, float, float],
+    padding: float,
+) -> pd.DataFrame:
+    if catalog.empty:
+        return catalog
+    ra_min, ra_max, dec_min, dec_max = bounds
+    return catalog[
+        (catalog["ra"] >= ra_min - padding)
+        & (catalog["ra"] <= ra_max + padding)
+        & (catalog["dec"] >= dec_min - padding)
+        & (catalog["dec"] <= dec_max + padding)
+    ].copy()
+
+
+class TractCatalogCache:
+    """In-memory LRU cache of per-tract merged lensing catalogs.
+
+    LSST coadd patches include overlap sky, so a crop can need catalog rows from
+    several truth tracts.  Each tract is merged once (about 1-2 minutes and
+    2 GB in memory) and reused by every crop that overlaps it.  When
+    ``write_dir`` is set, each newly built catalog is also saved as parquet.
+    """
+
+    def __init__(
+        self,
+        dc2_root: Path,
+        cosmodc2_root: Path,
+        max_tracts: int,
+        write_dir: Path | None = None,
+        overwrite: bool = False,
+    ):
+        self.dc2_root = dc2_root
+        self.cosmodc2_root = cosmodc2_root
+        self.max_tracts = max_tracts
+        self.write_dir = write_dir
+        self.overwrite = overwrite
+        self._cosmo_cat = None
+        self._cache: OrderedDict[int, pd.DataFrame] = OrderedDict()
+
+    def get(self, tract: int) -> pd.DataFrame:
+        cached = self._cache.get(tract)
+        if cached is not None:
+            self._cache.move_to_end(tract)
+            return cached
+
+        if self._cosmo_cat is None:
+            logging.info("Loading CosmoDC2 catalog from %s", self.cosmodc2_root)
+            self._cosmo_cat = load_cosmodc2_catalog(self.cosmodc2_root)
+        load_start = time.monotonic()
+        logging.info("Building merged catalog for tract=%s", tract)
+        catalog = build_lensing_dataframe(self.dc2_root, self._cosmo_cat, tract)
+        self._cache[tract] = catalog
+        logging.info(
+            "Built merged catalog for tract=%s rows=%d elapsed=%s",
+            tract,
+            len(catalog),
+            format_duration(time.monotonic() - load_start),
+        )
+        if self.write_dir is not None and (
+            self.overwrite or not self.catalog_path(tract).exists()
+        ):
+            self.write_dir.mkdir(parents=True, exist_ok=True)
+            catalog.to_parquet(self.catalog_path(tract), index=False)
+            logging.info("Wrote merged catalog %s", self.catalog_path(tract))
+        while len(self._cache) > self.max_tracts:
+            evicted_tract, _ = self._cache.popitem(last=False)
+            logging.info("Evicted merged catalog for tract=%s", evicted_tract)
+        return catalog
+
+    def catalog_path(self, tract: int) -> Path:
+        return self.write_dir / f"tract_{tract}.parquet"
+
+    def for_bounds(
+        self,
+        tracts: list[int],
+        bounds: tuple[float, float, float, float],
+        padding: float,
+    ) -> pd.DataFrame:
+        frames = []
+        for tract in tracts:
+            filtered = filter_catalog_to_bounds(self.get(tract), bounds, padding)
+            if not filtered.empty:
+                frames.append(filtered)
+        if not frames:
+            return pd.DataFrame()
+        catalog = pd.concat(frames, ignore_index=True)
+        catalog.drop_duplicates(subset=["cosmodc2_id"], inplace=True)
+        return catalog
+
+
+def safe_avg(tile_dict: dict, name: str) -> torch.Tensor:
+    total = tile_dict[f"{name}_sum"]
+    count = tile_dict[f"{name}_count"]
+    return total / (count + (count == 0) * torch.ones_like(count))
+
+
+def finalize_tile_dict(tile_dict: dict, avg_kernel_size: int, avg_kernel_sigma: int):
+    shear1 = safe_avg(tile_dict, "shear1")
+    shear2 = safe_avg(tile_dict, "shear2")
+    convergence = safe_avg(tile_dict, "convergence")
+    ellip1_lensed = safe_avg(tile_dict, "ellip1_lensed")
+    ellip2_lensed = safe_avg(tile_dict, "ellip2_lensed")
+    ellip1_lsst = safe_avg(tile_dict, "ellip1_lsst")
+    ellip2_lsst = safe_avg(tile_dict, "ellip2_lsst")
+
+    tile_dict["shear_1"] = shear1
+    tile_dict["shear_2"] = shear2
+    tile_dict["shear1_shear2"] = torch.cat([shear1, shear2], dim=-1)
+    tile_dict["convergence"] = convergence
+    tile_dict["shear1_shear2_convergence"] = torch.cat(
+        [shear1, shear2, convergence], dim=-1
+    )
+    tile_dict["ellip_lensed"] = torch.stack(
+        (ellip1_lensed.squeeze(-1), ellip2_lensed.squeeze(-1)), dim=-1
+    )
+    tile_dict["ellip_lsst"] = torch.stack(
+        (ellip1_lsst.squeeze(-1), ellip2_lsst.squeeze(-1)), dim=-1
+    )
+    tile_dict["ellip_lsst_wavg"] = compute_weighted_avg_ellip(
+        tile_dict, avg_kernel_size, avg_kernel_sigma
+    )
+    tile_dict["redshift"] = safe_avg(tile_dict, "redshift")
+    tile_dict["ra"] = safe_avg(tile_dict, "ra")
+    tile_dict["dec"] = safe_avg(tile_dict, "dec")
+    return tile_dict
+
+
+# --- Padded crops ------------------------------------------------------------
 
 
 @dataclass(frozen=True)
@@ -152,15 +591,10 @@ def iter_patch_manifest_for_tracts(
 
 
 def load_patch_footprints(
-    dc2_root: Path, tracts: set[int] | list[int] | tuple[int, ...] | None = None
+    dc2_root: Path, tracts: set[int] | list[int] | tuple[int, ...]
 ) -> dict[tuple[int, str], PatchFootprint]:
     footprints = {}
-    manifest_iter = (
-        iter_patch_manifest(dc2_root)
-        if tracts is None
-        else iter_patch_manifest_for_tracts(dc2_root, tracts)
-    )
-    for tract, patch in manifest_iter:
+    for tract, patch in iter_patch_manifest_for_tracts(dc2_root, tracts):
         footprints[(tract, patch)] = read_patch_footprint(dc2_root, tract, patch)
     return footprints
 
@@ -466,10 +900,6 @@ def patch_output_tile_mask(
 
 def make_data_module(args) -> LensingDC2DataModule:
     return LensingDC2DataModule(
-        dc2_image_dir="",
-        dc2_cat_path="",
-        image_slen=args.crop_slen,
-        n_image_split=1,
         tile_slen=args.tile_slen,
         splits="0:1/1:1/1:1",
         avg_ellip_kernel_size=args.avg_ellip_kernel_size,
@@ -525,12 +955,23 @@ def build_tile_payload(
 
 
 def flat_output_file(args, spec: CropSpec) -> Path:
+    """Output path for a crop, reusing the existing file name if there is one.
+
+    The ``idx`` field is the crop's position in the run that first wrote it, so it
+    depends on which tracts that run selected.  Matching on the rest of the name
+    keeps reruns with a different tract selection from writing duplicates.
+    """
     patch_label = spec.nominal_patch.replace(",", "_")
-    return (
-        args.output / f"tract_{spec.nominal_tract}_patch_{patch_label}"
+    prefix = (
+        f"tract_{spec.nominal_tract}_patch_{patch_label}"
         f"_padded_crop_{spec.crop_row}_{spec.crop_col}"
-        f"_idx_{spec.index:06d}_size_1.pt"
     )
+    existing = sorted(args.output.glob(f"{prefix}_idx_*_size_1.pt"))
+    if len(existing) > 1:
+        raise RuntimeError(f"Multiple cache files for one crop: {existing}")
+    if existing:
+        return existing[0]
+    return args.output / f"{prefix}_idx_{spec.index:06d}_size_1.pt"
 
 
 def write_example(
@@ -646,70 +1087,24 @@ def manifest_file(args, selected_tracts: set[int] | list[int]) -> Path:
     )
 
 
-def ensure_merged_catalog_cache(args, required_tracts: set[int]) -> None:
-    if args.merged_catalog_cache is None:
-        raise ValueError("merged_catalog_cache must be set before preparation")
-
-    required = sorted(required_tracts)
-    to_build = [
-        tract
-        for tract in required
-        if args.overwrite_merged_catalog_cache
-        or not merged_catalog_path(args.merged_catalog_cache, tract).exists()
-    ]
-    if not to_build:
-        logging.info(
-            "Merged catalog cache already contains all %d required tracts at %s",
-            len(required),
-            args.merged_catalog_cache,
-        )
-        return
-
-    logging.info(
-        "Preparing merged catalog cache at %s for %d/%d required tracts: %s",
-        args.merged_catalog_cache,
-        len(to_build),
-        len(required),
-        to_build,
-    )
-    setup_start = time.monotonic()
-    logging.info("Loading CosmoDC2 catalog for merged catalog preparation")
-    cosmo_cat = load_cosmodc2_catalog(args.cosmodc2_root)
-    start = time.monotonic()
-    for done, tract in enumerate(to_build, start=1):
-        tract_start = time.monotonic()
-        out, rows, truth_rows = write_merged_catalog(
-            args.dc2_root,
-            cosmo_cat,
-            args.merged_catalog_cache,
-            tract,
-            overwrite=args.overwrite_merged_catalog_cache,
-        )
-        logging.info(
-            "[%d/%d] prepared merged catalog tract=%s rows=%d truth_rows=%d "
-            "file=%s elapsed=%s eta=%s",
-            done,
-            len(to_build),
-            tract,
-            rows,
-            truth_rows,
-            out,
-            format_duration(time.monotonic() - tract_start),
-            format_eta(start, done, len(to_build)),
-        )
-    logging.info(
-        "Finished merged catalog preparation in %s",
-        format_duration(time.monotonic() - setup_start),
-    )
-
-
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
+    parser.add_argument(
+        "--config",
+        type=Path,
+        default=DEFAULT_CONFIG,
+        help="Training config used for paths, tracts, and target-map settings. "
+        "CLI options override it.",
+    )
     parser.add_argument("--dc2-root", type=Path, default=None)
     parser.add_argument("--cosmodc2-root", type=Path, default=None)
     parser.add_argument("--output", type=Path, default=None)
-    parser.add_argument("--tracts", type=parse_ints, default=None)
+    parser.add_argument(
+        "--tracts",
+        type=parse_ints,
+        default=None,
+        help="Comma-separated tracts. Defaults to surveys.dc2.tracts in the config.",
+    )
     parser.add_argument("--max-crops", type=int, default=None)
     parser.add_argument("--tile-slen", type=int, default=None)
     parser.add_argument("--avg-ellip-kernel-size", type=int, default=None)
@@ -720,38 +1115,25 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--border-tiles", type=int, default=2)
     parser.add_argument("--footprint-padding-deg", type=float, default=0.02)
     parser.add_argument("--patch-padding-deg", type=float, default=0.002)
-    parser.add_argument("--tract-cache-size", type=int, default=12)
     parser.add_argument("--image-cache-items", type=int, default=48)
     parser.add_argument(
-        "--merged-catalog-cache",
-        type=Path,
-        default=None,
-        help=(
-            "Optional directory of per-tract merged catalog parquet files from "
-            "generate_merged_catalog_cache.py. When set, skip per-crop "
-            "truth/object/CosmoDC2 merging."
-        ),
-    )
-    parser.add_argument(
-        "--prepare-merged-catalog-cache",
-        action="store_true",
-        help=(
-            "Before generating padded crops, build any missing merged catalog "
-            "tract parquet files required by the selected tracts and their "
-            "neighbors. If --merged-catalog-cache is omitted, use the default "
-            f"{DEFAULT_MERGED_CATALOG_CACHE}."
-        ),
-    )
-    parser.add_argument(
-        "--overwrite-merged-catalog-cache",
-        action="store_true",
-        help="Rebuild required merged catalog parquet files even if they already exist.",
-    )
-    parser.add_argument(
-        "--merged-catalog-cache-size",
+        "--catalog-cache-size",
         type=int,
         default=12,
-        help="Maximum number of merged catalog tract tables to keep in memory.",
+        help="Maximum number of merged tract catalogs (about 2 GB each) kept in memory.",
+    )
+    parser.add_argument(
+        "--write-catalogs",
+        type=Path,
+        nargs="?",
+        const=DEFAULT_CATALOG_OUTPUT,
+        default=None,
+        metavar="DIR",
+        help=(
+            "Also save merged per-tract catalogs as tract_<tract>.parquet, to DIR "
+            f"if given, otherwise {DEFAULT_CATALOG_OUTPUT}. Existing files are kept "
+            "unless --overwrite is passed."
+        ),
     )
     parser.add_argument("--complete-context-only", action="store_true")
     parser.add_argument("--overwrite", action="store_true")
@@ -770,19 +1152,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 
 def normalize_args(args) -> None:
-    # Reuse the existing config-default helper by setting attributes it expects.
-    output_was_provided = args.output is not None
-    args.image_slen = None
-    args.n_image_split = None
     apply_config_defaults(args)
-    if not output_was_provided and args.output == Path("/nfs/turbo/lsa-regier/dc2_wl"):
-        args.output = DEFAULT_OUTPUT
-    if args.prepare_merged_catalog_cache and args.merged_catalog_cache is None:
-        args.merged_catalog_cache = DEFAULT_MERGED_CATALOG_CACHE
-    if args.overwrite_merged_catalog_cache and not args.prepare_merged_catalog_cache:
+    if not args.tracts:
         raise ValueError(
-            "--overwrite-merged-catalog-cache requires --prepare-merged-catalog-cache"
+            f"No tracts selected: set surveys.dc2.tracts in {args.config} or pass --tracts"
         )
+    args.tracts = sorted({int(tract) for tract in args.tracts})
     args.crop_slen = args.crop_tiles * args.tile_slen
     args.stride = args.interior_tiles * args.tile_slen
     if args.crop_tiles != args.interior_tiles + 2 * args.border_tiles:
@@ -799,15 +1174,13 @@ def main() -> None:
     setup_logging(args.log_file)
     run_start = time.monotonic()
     args.output.mkdir(parents=True, exist_ok=True)
+    selected_tracts = args.tracts
 
-    selected_tracts = set(args.tracts) if args.tracts else None
-    if not selected_tracts:
-        selected_tracts = sorted(
-            {tract for tract, _patch in iter_patch_manifest(args.dc2_root)}
-        )
-
+    logging.info("Generation config: %s", args.config)
+    logging.info("Input DC2 root: %s", args.dc2_root)
+    logging.info("Input CosmoDC2 root: %s", args.cosmodc2_root)
     logging.info("Output directory: %s", args.output)
-    logging.info("Selected tracts: %s", sorted(selected_tracts))
+    logging.info("Selected tracts: %s", selected_tracts)
     logging.info(
         "Crop options: crop_tiles=%d interior_tiles=%d tile_slen=%d stride=%d "
         "complete_context_only=%s",
@@ -836,24 +1209,25 @@ def main() -> None:
         "Loading patch footprints for selected + neighboring tracts: %s",
         sorted(footprint_tracts),
     )
-    if args.prepare_merged_catalog_cache:
-        ensure_merged_catalog_cache(args, footprint_tracts)
     footprints = load_patch_footprints(args.dc2_root, footprint_tracts)
     logging.info("Loaded %d patch footprints", len(footprints))
-    if args.merged_catalog_cache is None:
-        logging.info("Loading CosmoDC2 catalog")
-        cosmo_cat = load_cosmodc2_catalog(args.cosmodc2_root)
-    else:
-        logging.info("Using merged catalog cache: %s", args.merged_catalog_cache)
-        cosmo_cat = None
+    catalogs = TractCatalogCache(
+        args.dc2_root,
+        args.cosmodc2_root,
+        args.catalog_cache_size,
+        write_dir=args.write_catalogs,
+        overwrite=args.overwrite,
+    )
+    if args.write_catalogs is not None:
+        logging.info("Writing merged catalogs to %s", args.write_catalogs)
+        for tract in selected_tracts:
+            if args.overwrite or not catalogs.catalog_path(tract).exists():
+                catalogs.get(tract)
     data_module = make_data_module(args)
     logging.info(
         "Finished setup in %s", format_duration(time.monotonic() - setup_start)
     )
 
-    truth_cache: OrderedDict[int, pd.DataFrame] = OrderedDict()
-    object_cache: OrderedDict[int, pd.DataFrame] = OrderedDict()
-    merged_catalog_cache: OrderedDict[int, pd.DataFrame] = OrderedDict()
     image_cache = PatchImageCache(args.image_cache_items)
 
     written = 0
@@ -928,49 +1302,9 @@ def main() -> None:
                 bounds, all_truth_bounds, args.footprint_padding_deg
             )
             overlap_tracts = put_nominal_tract_first(overlap_tracts, spec.nominal_tract)
-            if args.merged_catalog_cache is not None:
-                catalog = build_catalog_from_merged_cache(
-                    merged_catalog_cache,
-                    args.merged_catalog_cache,
-                    overlap_tracts,
-                    bounds,
-                    args.footprint_padding_deg,
-                    args.merged_catalog_cache_size,
-                )
-            else:
-                truth_by_tract = {}
-                object_by_tract = {}
-                for overlap_tract in overlap_tracts:
-                    truth_df = load_cached_tract(
-                        truth_cache,
-                        overlap_tract,
-                        args.tract_cache_size,
-                        "truth",
-                        lambda selected_tract: read_truth_tract(
-                            args.dc2_root, selected_tract
-                        ),
-                    )
-                    truth_filtered = filter_truth_to_bounds(
-                        truth_df, bounds, args.footprint_padding_deg
-                    )
-                    if truth_filtered.empty:
-                        continue
-                    truth_by_tract[overlap_tract] = truth_filtered
-                    object_by_tract[overlap_tract] = load_cached_tract(
-                        object_cache,
-                        overlap_tract,
-                        args.tract_cache_size,
-                        "object",
-                        lambda selected_tract: read_object_tract(
-                            args.dc2_root, selected_tract
-                        ),
-                    )
-                catalog = build_lensing_dataframe(
-                    args.dc2_root,
-                    cosmo_cat,
-                    truth_by_tract=truth_by_tract,
-                    object_by_tract=object_by_tract,
-                )
+            catalog = catalogs.for_bounds(
+                overlap_tracts, bounds, args.footprint_padding_deg
+            )
             if catalog.empty:
                 empty_catalogs.append(
                     (spec.nominal_tract, spec.nominal_patch, spec.index)
@@ -1042,8 +1376,11 @@ def main() -> None:
                 raise
 
     manifest = {
+        "config": str(args.config),
+        "dc2_root": str(args.dc2_root),
+        "cosmodc2_root": str(args.cosmodc2_root),
         "output": str(args.output),
-        "selected_tracts": sorted(selected_tracts),
+        "selected_tracts": selected_tracts,
         "crop_tiles": args.crop_tiles,
         "interior_tiles": args.interior_tiles,
         "border_tiles": args.border_tiles,
@@ -1051,9 +1388,7 @@ def main() -> None:
         "crop_slen": args.crop_slen,
         "stride": args.stride,
         "complete_context_only": args.complete_context_only,
-        "merged_catalog_cache": str(args.merged_catalog_cache)
-        if args.merged_catalog_cache is not None
-        else None,
+        "catalog_output": str(args.write_catalogs) if args.write_catalogs else None,
         "requested_crops": total,
         "written": written,
         "skipped_existing": skipped_existing,

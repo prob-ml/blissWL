@@ -8,6 +8,7 @@ from einops import rearrange
 from torchmetrics import MetricCollection
 
 from images_to_maps.convnet import MassMapNet
+from images_to_maps.utils.tile_mask import crop_catalog_to_mask, get_tile_mask
 
 
 class TimeEncoder(L.LightningModule):
@@ -68,6 +69,7 @@ class FlowMatching(L.LightningModule):
         sample_image_renders: Optional[MetricCollection] = None,
         num_samples_for_mode: int = 10,
         num_ode_steps: int = 10,
+        loss_mask_key: Optional[str] = None,
     ):
         super().__init__()
         self.n_bands = n_bands
@@ -92,6 +94,9 @@ class FlowMatching(L.LightningModule):
         self.sample_image_renders = sample_image_renders
         self.num_samples_for_mode = num_samples_for_mode
         self.num_ode_steps = num_ode_steps
+        # Batch key of a per-tile bool mask restricting the loss and metrics
+        # (e.g. "loss_mask" for padded crop interiors); None uses all tiles.
+        self.loss_mask_key = loss_mask_key
 
         self.initialize_networks()
 
@@ -133,12 +138,9 @@ class FlowMatching(L.LightningModule):
         )
 
     def compute_loss(self, batch):
-        x_list = [inorm.get_input_tensor(batch) for inorm in self.image_normalizers]
-        x = torch.cat(x_list, dim=2)
-        x_embedding = self.image_encoder(x)
+        x_embedding = self.encode_conditioning(batch)
 
-        t = torch.rand([x.shape[0], 1], device=x.device)
-        t_embedding = self.time_encoder(t)
+        t = torch.rand([x_embedding.shape[0], 1], device=x_embedding.device)
 
         shear1 = self.scale_factor * rearrange(
             batch["tile_catalog"]["shear_1"], "b h w r -> b r h w"
@@ -153,25 +155,40 @@ class FlowMatching(L.LightningModule):
 
         z0 = torch.randn_like(z1, device=z1.device)
 
-        zt = (1 - t) * z0 + t * z1
+        t_map = t.view(-1, 1, 1, 1)  # broadcast over channels and tiles, not batch
+        zt = (1 - t_map) * z0 + t_map * z1
 
         velo_true = z1 - z0
 
-        velo_pred = self.velocity_net(zt, x_embedding, t_embedding)
+        velo_pred = self.velocity(zt, x_embedding, t)
 
-        return ((velo_true - velo_pred) ** 2).mean()
+        sq_err = (velo_true - velo_pred) ** 2  # (b, z_dim, h, w)
+        mask = get_tile_mask(batch, self.loss_mask_key, *sq_err.shape[2:4])
+        if mask is None:
+            return sq_err.mean()
+        # zt keeps all tiles as velocity-net input (as in the global sampler, which
+        # fills crop borders from the global state); only masked tiles are scored
+        mask = mask.unsqueeze(1)
+        return torch.where(mask, sq_err, 0.0).sum() / (mask.sum() * sq_err.shape[1])
+
+    def encode_conditioning(self, batch):
+        x_list = [inorm.get_input_tensor(batch) for inorm in self.image_normalizers]
+        x = torch.cat(x_list, dim=2)
+        return self.image_encoder(x)
+
+    def velocity(self, zt, x_embedding, t):
+        t_embedding = self.time_encoder(t)
+        return self.velocity_net(zt, x_embedding, t_embedding)
 
     def sample_path(self, zt, x_embedding, t, t_next, method="midpoint"):
-        t_embedding = self.time_encoder(t)
-        velo_t = self.velocity_net(zt, x_embedding, t_embedding)
+        velo_t = self.velocity(zt, x_embedding, t)
 
         t_diff = t_next[0, 0] - t[0, 0]
 
         if method == "midpoint":
             half_step = 0.5 * t_diff
             z_mid = zt + half_step * velo_t
-            t_mid_embedding = self.time_encoder(t + half_step)
-            u_mid = self.velocity_net(z_mid, x_embedding, t_mid_embedding)
+            u_mid = self.velocity(z_mid, x_embedding, t + half_step)
             return zt + t_diff * u_mid
         if method == "euler":
             return zt + t_diff * velo_t
@@ -187,9 +204,7 @@ class FlowMatching(L.LightningModule):
         Returns:
             Dict with 'shear_1', 'shear_2', 'convergence' keys
         """
-        x_list = [inorm.get_input_tensor(batch) for inorm in self.image_normalizers]
-        x = torch.cat(x_list, dim=2)
-        x_embedding = self.image_encoder(x)
+        x_embedding = self.encode_conditioning(batch)
 
         n_samples = self.num_samples_for_mode if use_mode else 1
         samples = []
@@ -198,7 +213,7 @@ class FlowMatching(L.LightningModule):
             samples.append(z)
 
         z_final = torch.stack(samples).mean(0) if use_mode else samples[0]
-        return self._z_to_catalog(z_final)
+        return self.z_to_catalog(z_final)
 
     def _integrate_ode(self, x_embedding):
         """Integrate ODE from t=0 (noise) to t=1 (data)."""
@@ -215,7 +230,7 @@ class FlowMatching(L.LightningModule):
 
         return z / self.scale_factor
 
-    def _z_to_catalog(self, z):
+    def z_to_catalog(self, z):
         """Convert z tensor (b, z_dim, h, w) to catalog dict."""
         n_bins = self.num_redshift_bins
         shear1 = z[:, :n_bins, :, :]
@@ -228,20 +243,31 @@ class FlowMatching(L.LightningModule):
             "convergence": rearrange(convergence, "b r h w -> b h w r"),
         }
 
+    def _z_to_catalog(self, z):
+        return self.z_to_catalog(z)
+
     def update_metrics(self, batch, batch_idx):
         """Update metrics with current batch predictions."""
         if self.mode_metrics is None:
             return
 
         target_cat = batch["tile_catalog"]
+        n_tiles_h, n_tiles_w = target_cat["shear_1"].shape[1:3]
+        mask = get_tile_mask(batch, self.loss_mask_key, n_tiles_h, n_tiles_w)
+
+        def metric_cat(catalog):
+            # metrics use the same tiles as the loss; rendered maps stay full size
+            return catalog if mask is None else crop_catalog_to_mask(catalog, mask)
 
         with torch.no_grad():
             mode_cat = self.sample(batch, use_mode=True)
-            self.mode_metrics.update(target_cat, mode_cat, None)
+            self.mode_metrics.update(metric_cat(target_cat), metric_cat(mode_cat), None)
 
             if self.sample_metrics is not None:
                 sample_cat = self.sample(batch, use_mode=False)
-                self.sample_metrics.update(target_cat, sample_cat, None)
+                self.sample_metrics.update(
+                    metric_cat(target_cat), metric_cat(sample_cat), None
+                )
 
             if self.sample_image_renders is not None:
                 self.sample_image_renders.update(

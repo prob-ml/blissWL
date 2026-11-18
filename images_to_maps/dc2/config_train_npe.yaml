@@ -57,12 +57,13 @@ encoder:
     res_midpoint: 128
     res_final: 8  # num tiles per side
     ch_init: 64
-    ch_max: 512
+    ch_max: 1024
     ch_final: 128
-    initial_downsample: true
-    more_up_layers: false
+    initial_downsample: false
+    more_up_layers: true
     num_bottleneck_layers: 0
     image_normalizers: ${lensing_normalizers_nanpsf}
+    loss_mask_key: loss_mask  # loss and val/test metrics use only the crop interiors
     var_dist:
         _target_: images_to_maps.variational_dist.VariationalDist
         tile_slen: ${surveys.dc2.tile_slen}
@@ -89,13 +90,18 @@ encoder:
 surveys:
     dc2:
         _target_: images_to_maps.dc2.dc2.LensingDC2DataModule
-        dc2_image_dir: ${paths.dc2}
-        dc2_cat_path: ${paths.dc2}/truth_merged_summary_v1-0-0/match_dr6_v2
-        image_slen: 4096
-        n_image_split: 2  # split into n_image_split**2 subimages
         tile_slen: 256
-        splits: 0:20/20:30/30:100
-        splits_type: percent
+        tracts: [3828, 3829]  # tracts to generate (generate_dc2_cache.py) and load
+        # Train/val/test regions as rectangles of crops in each tract's 28 x 28 crop grid:
+        # row = 4 * patch_y + crop_row (row 0 is the south edge), col = 4 * patch_x + crop_col.
+        # Ranges are inclusive. Test takes precedence over val; all other crops are train.
+        splits: null
+        split_regions:
+            test:  # 14 x 14 crops, RA 55.67-56.65, Dec -37.22 to -36.45
+                - {tract: 3828, rows: [0, 13], cols: [14, 27]}
+            val:  # L-shaped band, 6 crops wide, around the test block
+                - {tract: 3828, rows: [0, 19], cols: [8, 27]}
+        train_buffer_crops: 1  # drop train crops within this many crops of val/test
         avg_ellip_kernel_size: 15  # must be odd
         avg_ellip_kernel_sigma: 15
         redshift_quantiles: [0.00, 0.762988, 1.120420, 1.592735]
@@ -103,7 +109,7 @@ surveys:
         batch_size: 1
         num_workers: 1
         cached_data_path: ${paths.dc2_cache}
-        exclude_file_list_path: ${paths.dc2_cache}/exclude_zero_target_rows.txt
+        exclude_file_list_path: null
         train_transforms:
             - _target_: images_to_maps.data_augmentation.LensingRotateFlipTransform
         shuffle_file_order: false  # partition train/val/test by ra/dec so that we can compute 2PCFs on spatially contiguous test set
@@ -117,7 +123,7 @@ train:
             _target_: lightning.pytorch.loggers.TensorBoardLogger
             save_dir: ${paths.output}
             name: results/dc2/npe
-            version: nanpsf_${encoder.ch_max}_${encoder.initial_downsample}_${encoder.more_up_layers}
+            version: padded_nanpsf_${encoder.ch_max}_${encoder.initial_downsample}_${encoder.more_up_layers}
             default_hp_metric: false
         reload_dataloaders_every_n_epochs: 0
         check_val_every_n_epoch: 1

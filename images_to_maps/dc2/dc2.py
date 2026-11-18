@@ -6,24 +6,85 @@ This module is self-contained and has no dependencies on bliss core modules.
 import copy
 import logging
 import math
-import pathlib
+import os
+import re
 from typing import List
 
 import numpy as np
-import pandas as pd
 import torch
-from astropy.io import fits
+from omegaconf import OmegaConf
 
 from images_to_maps.cached_dataset import CachedSimulatedDataModule
-from images_to_maps.dc2.utils import (
-    get_bands_flux_and_psf,
-    map_nested_dicts,
-    plocs_from_ra_dec,
-    split_tensor,
-    unpack_dict,
-    wcs_from_wcs_header_str,
+from images_to_maps.dc2.utils import get_bands_flux_and_psf, plocs_from_ra_dec
+
+PADDED_CROP_RE = re.compile(
+    r"^tract_(?P<tract>\d+)_patch_(?P<patch_x>\d+)_(?P<patch_y>\d+)"
+    r"_padded_crop_(?P<crop_row>\d+)_(?P<crop_col>\d+)_"
 )
-from images_to_maps.utils.weighted_avg_ellip import compute_weighted_avg_ellip
+# Padded crops step by their 4x4-tile interior over a 16x16-tile patch.
+CROPS_PER_PATCH_SIDE = 4
+HELD_OUT_SPLITS = ("test", "val")  # earlier entries take precedence
+
+
+def padded_crop_position(file_name: str) -> tuple[int, int, int]:
+    """Tract and crop row/column in the tract's crop grid (row 0 is the south edge)."""
+    match = PADDED_CROP_RE.match(file_name)
+    if match is None:
+        raise ValueError(f"Not a padded crop file name: {file_name}")
+    crop_row = int(match.group("crop_row"))
+    crop_col = int(match.group("crop_col"))
+    if crop_row >= CROPS_PER_PATCH_SIDE or crop_col >= CROPS_PER_PATCH_SIDE:
+        raise ValueError(f"Unexpected crop index in {file_name}")
+    row = CROPS_PER_PATCH_SIDE * int(match.group("patch_y")) + crop_row
+    col = CROPS_PER_PATCH_SIDE * int(match.group("patch_x")) + crop_col
+    return int(match.group("tract")), row, col
+
+
+def assign_crop_splits(
+    file_names: List[str], split_regions: dict, train_buffer_crops: int = 0
+) -> dict[str, str]:
+    """Assign padded crops to "train", "val", "test", or "buffer" (dropped).
+
+    ``split_regions`` maps "test" and "val" to lists of rectangles
+    ``{tract, rows: [first, last], cols: [first, last]}`` (inclusive) in each
+    tract's crop grid.  Test takes precedence over val, and every other crop is
+    train.  Train crops within ``train_buffer_crops`` rows/columns (including
+    diagonals) of a val or test crop in the same tract are marked "buffer", so
+    that no training crop's border context covers held-out sky.  The buffer is
+    only applied within a tract.
+    """
+    unknown = set(split_regions) - set(HELD_OUT_SPLITS)
+    if unknown:
+        raise ValueError(f"split_regions keys must be in {HELD_OUT_SPLITS}: {unknown}")
+
+    positions = {name: padded_crop_position(name) for name in file_names}
+    assignment = dict.fromkeys(file_names, "train")
+    for split in reversed(HELD_OUT_SPLITS):  # assign val first so test overrides it
+        for region in split_regions.get(split) or []:
+            (row0, row1), (col0, col1) = region["rows"], region["cols"]
+            matched = [
+                name
+                for name, (tract, row, col) in positions.items()
+                if tract == int(region["tract"])
+                and row0 <= row <= row1
+                and col0 <= col <= col1
+            ]
+            if not matched:
+                raise ValueError(f"{split} region matches no cached crops: {region}")
+            for name in matched:
+                assignment[name] = split
+
+    held_out = {positions[n] for n, split in assignment.items() if split != "train"}
+    offsets = range(-train_buffer_crops, train_buffer_crops + 1)
+    for name, split in assignment.items():
+        if split != "train":
+            continue
+        tract, row, col = positions[name]
+        if any(
+            (tract, row + dr, col + dc) in held_out for dr in offsets for dc in offsets
+        ):
+            assignment[name] = "buffer"
+    return assignment
 
 
 class LensingDC2DataModule(CachedSimulatedDataModule):
@@ -33,12 +94,8 @@ class LensingDC2DataModule(CachedSimulatedDataModule):
 
     def __init__(
         self,
-        dc2_image_dir: str,
-        dc2_cat_path: str,
-        image_slen: int,
-        n_image_split: int,
         tile_slen: int,
-        splits: str,
+        splits: str | None,
         avg_ellip_kernel_size: int,
         avg_ellip_kernel_sigma: int,
         redshift_quantiles: List[float],
@@ -49,6 +106,9 @@ class LensingDC2DataModule(CachedSimulatedDataModule):
         shuffle_file_order: bool,
         splits_type: str = "percent",
         exclude_file_list_path: str | None = None,
+        tracts: List[int] | None = None,
+        split_regions: dict | None = None,
+        train_buffer_crops: int = 0,
         **kwargs,
     ):
         super().__init__(
@@ -64,96 +124,85 @@ class LensingDC2DataModule(CachedSimulatedDataModule):
             exclude_file_list_path=exclude_file_list_path,
         )
 
-        self.dc2_image_dir = dc2_image_dir
-        self.dc2_cat_path = dc2_cat_path
-        self.image_slen = image_slen
-        self.image_lim = [image_slen, image_slen]
-        self.n_image_split = n_image_split
         self.tile_slen = tile_slen
-        self.bands = self.BANDS
-        self.n_bands = len(self.BANDS)
         self.avg_ellip_kernel_size = avg_ellip_kernel_size
         self.avg_ellip_kernel_sigma = avg_ellip_kernel_sigma
         self.redshift_quantiles = redshift_quantiles
+        self.tracts = None if tracts is None else {int(t) for t in tracts}
+        if OmegaConf.is_config(split_regions):
+            split_regions = OmegaConf.to_container(split_regions, resolve=True)
+        self.split_regions = split_regions
+        self.train_buffer_crops = int(train_buffer_crops)
+        self.split_assignment = None
+        if (splits is None) == (split_regions is None):
+            raise ValueError("Set exactly one of splits and split_regions")
+        if split_regions is not None:
+            if shuffle_file_order:
+                raise ValueError("split_regions requires shuffle_file_order=false")
+            region_tracts = {
+                int(region["tract"])
+                for regions in split_regions.values()
+                for region in regions or []
+            }
+            if self.tracts is not None and not region_tracts <= self.tracts:
+                raise ValueError(
+                    f"split_regions use tracts {sorted(region_tracts - self.tracts)} "
+                    f"that are not in tracts {sorted(self.tracts)}"
+                )
 
-        # Validate configuration
-        assert self.image_lim[0] == self.image_lim[1], (
-            "image_lim[0] should be equal to image_lim[1]"
+    def _filter_file_names(self, file_names: List[str]) -> List[str]:
+        """Keep only cache files named ``tract_<tract>_...`` for the selected tracts."""
+        if self.tracts is None:
+            return file_names
+        selected = []
+        for file_name in file_names:
+            match = re.match(r"tract_(\d+)_", file_name)
+            if match is not None and int(match.group(1)) in self.tracts:
+                selected.append(file_name)
+        logging.getLogger("LensingDC2DataModule").info(
+            "Selected %d/%d cached files from tracts %s",
+            len(selected),
+            len(file_names),
+            sorted(self.tracts),
         )
-        assert self.image_lim[0] % self.n_image_split == 0, (
-            "image_lim is not divisible by n_image_split"
+        return selected
+
+    def _load_file_paths_and_slices(self):
+        if self.split_regions is None:
+            super()._load_file_paths_and_slices()
+            return
+
+        file_names = self._list_file_names()
+        self.split_assignment = assign_crop_splits(
+            file_names, self.split_regions, self.train_buffer_crops
         )
-        assert (self.image_lim[0] // self.n_image_split) % self.tile_slen == 0, (
-            "invalid tile_slen"
+        by_split = {
+            split: [n for n in file_names if self.split_assignment[n] == split]
+            for split in ("train", "val", "test", "buffer")
+        }
+        for split in ("train", "val", "test"):
+            if not by_split[split]:
+                raise ValueError(f"split_regions leave the {split} split empty")
+        logging.getLogger("LensingDC2DataModule").info(
+            "Region split: train=%d val=%d test=%d buffer (dropped)=%d",
+            *(len(by_split[s]) for s in ("train", "val", "test", "buffer")),
         )
 
-        self._image_files = None
-        self._bg_files = None
-
-    def _load_image_and_bg_files_list(self):
-        """Load list of image and background files for all bands."""
-        img_pattern = "**/*/calexp*.fits"
-        bg_pattern = "**/*/bkgd*.fits"
-        image_files = []
-        bg_files = []
-
-        for band in self.bands:
-            band_path = self.dc2_image_dir + str(band)
-            img_file_list = list(pathlib.Path(band_path).glob(img_pattern))
-            bg_file_list = list(pathlib.Path(band_path).glob(bg_pattern))
-
-            image_files.append(sorted(img_file_list))
-            bg_files.append(sorted(bg_file_list))
-        n_image = len(bg_files[0])
-
-        self._image_files = image_files
-        self._bg_files = bg_files
-
-        return n_image
-
-    def read_image_for_bands(self, image_index):
-        """Read image data for all bands from FITS files."""
-        image_list = []
-        wcs_header_str = None
-        for b in range(self.n_bands):
-            image_frame = fits.open(self._image_files[b][image_index])
-            image_data = image_frame[1].data
-            if wcs_header_str is None:
-                wcs_header_str = image_frame[1].header.tostring()
-            image_frame.close()
-
-            image = torch.nan_to_num(
-                torch.from_numpy(image_data)[: self.image_lim[0], : self.image_lim[1]]
-            )
-            image_list.append(image)
-
-        return torch.stack(image_list), wcs_header_str
+        # Lay files out as train | val | test so the base class slices apply.
+        ordered = by_split["train"] + by_split["val"] + by_split["test"]
+        self.file_paths = [os.path.join(str(self.cached_data_path), f) for f in ordered]
+        n_train, n_val = len(by_split["train"]), len(by_split["val"])
+        self.slices = [
+            slice(0, n_train),
+            slice(n_train, n_train + n_val),
+            slice(n_train + n_val, len(ordered)),
+        ]
 
     @staticmethod
     def squeeze_tile_dict(tile_dict):
         """Remove batch dimension from tile dict values."""
         tile_dict_copy = copy.copy(tile_dict)
         return {k: v.squeeze(0) for k, v in tile_dict_copy.items()}
-
-    def prepare_data(self):
-        """Prepare cached data files if they don't exist."""
-        if self.cached_data_path.exists():
-            logger = logging.getLogger("LensingDC2DataModule")
-            warning_msg = (
-                "WARNING: cached data already exists at [%s], we directly use it\n"
-            )
-            logger.warning(warning_msg, str(self.cached_data_path))
-            return
-
-        logger = logging.getLogger("LensingDC2DataModule")
-        warning_msg = "WARNING: can't find cached data, we generate it at [%s]\n"
-        logger.warning(warning_msg, str(self.cached_data_path))
-        self.cached_data_path.mkdir(parents=True)
-
-        n_image = self._load_image_and_bg_files_list()
-
-        for i in range(n_image):
-            self.generate_cached_data(i)
 
     def to_tile_catalog(self, full_catalog, height, width):
         """Convert full catalog to tile-level catalog.
@@ -236,194 +285,6 @@ class LensingDC2DataModule(CachedSimulatedDataModule):
 
         return tile_cat  # Return plain dict
 
-    def load_image_and_catalog(self, image_index):
-        """Load image and catalog data for a given image index."""
-        image, wcs_header_str = self.read_image_for_bands(image_index)
-        wcs = wcs_from_wcs_header_str(wcs_header_str)
-
-        plocs_lim = image[0].shape
-        height = plocs_lim[0]
-        width = plocs_lim[1]
-
-        catalog_dict = LensingDC2Catalog.read_catalog(
-            self.dc2_cat_path,
-            wcs,
-            height,
-            width,
-            bands=self.bands,
-            n_bands=self.n_bands,
-        )
-
-        full_cat = LensingDC2Catalog.bin_catalog_by_redshift(
-            catalog_dict,
-            height,
-            width,
-            redshift_quantiles=self.redshift_quantiles,
-        )
-
-        tile_cat = self.to_tile_catalog(full_cat, height, width)
-        n_psf_params = full_cat["psf"].shape[-1]
-        psf_params = (tile_cat["psf_sum"] / tile_cat["psf_count"]).view(
-            *tile_cat["psf_sum"].shape[:-1], self.n_bands, n_psf_params
-        )
-        del tile_cat["psf_sum"]
-        del tile_cat["psf_count"]
-        tile_dict = self.squeeze_tile_dict(tile_cat)
-
-        return {
-            "tile_dict": tile_dict,
-            "inputs": {
-                "image": image,
-                "psf_params": psf_params.squeeze(0),
-            },
-            "other_info": {
-                "full_cat": full_cat,
-                "wcs": wcs,
-                "wcs_header_str": wcs_header_str,
-            },
-        }
-
-    def split_image_and_tile_cat(
-        self, image, tile_cat, tile_cat_keys_to_split, psf_params
-    ):
-        """Split image and tile catalog into sub-images."""
-        # split image
-        split_lim = self.image_lim[0] // self.n_image_split
-        image_splits = split_tensor(image, split_lim, 1, 2)
-        image_width_pixels = image.shape[2]
-        split_image_num_on_width = image_width_pixels // split_lim
-
-        # split tile cat
-        tile_cat_splits = {}
-        for param_name in tile_cat_keys_to_split:
-            tile_cat_splits[param_name] = split_tensor(
-                tile_cat[param_name], split_lim // self.tile_slen, 0, 1
-            )
-
-        # split PSF params
-        psf_splits = split_tensor(psf_params, split_lim // self.tile_slen, 0, 1)
-
-        return {
-            "tile_catalog": unpack_dict(tile_cat_splits),
-            "images": image_splits,
-            "image_height_index": (
-                torch.arange(0, len(image_splits)) // split_image_num_on_width
-            ).tolist(),
-            "image_width_index": (
-                torch.arange(0, len(image_splits)) % split_image_num_on_width
-            ).tolist(),
-            "psf_params": [p.flatten(0, 1).mean(0) for p in psf_splits],
-        }
-
-    def generate_cached_data(self, image_index):
-        """Generate and save cached data for a given image index."""
-        result_dict = self.load_image_and_catalog(image_index)
-
-        image = result_dict["inputs"]["image"]
-        tile_dict = result_dict["tile_dict"]
-        psf_params = result_dict["inputs"]["psf_params"]
-
-        shear1 = tile_dict["shear1_sum"] / (
-            tile_dict["shear1_count"]
-            + (tile_dict["shear1_count"] == 0)
-            * torch.ones_like(tile_dict["shear1_count"])
-        )
-        shear2 = tile_dict["shear2_sum"] / (
-            tile_dict["shear2_count"]
-            + (tile_dict["shear2_count"] == 0)
-            * torch.ones_like(tile_dict["shear2_count"])
-        )
-        convergence = tile_dict["convergence_sum"] / (
-            tile_dict["convergence_count"]
-            + (tile_dict["convergence_count"] == 0)
-            * torch.ones_like(tile_dict["convergence_count"])
-        )
-        ellip1_lensed = tile_dict["ellip1_lensed_sum"] / (
-            tile_dict["ellip1_lensed_count"]
-            + (tile_dict["ellip1_lensed_count"] == 0)
-            * torch.ones_like(tile_dict["ellip1_lensed_count"])
-        )
-        ellip2_lensed = tile_dict["ellip2_lensed_sum"] / (
-            tile_dict["ellip2_lensed_count"]
-            + (tile_dict["ellip2_lensed_count"] == 0)
-            * torch.ones_like(tile_dict["ellip2_lensed_count"])
-        )
-        ellip_lensed = torch.stack(
-            (ellip1_lensed.squeeze(-1), ellip2_lensed.squeeze(-1)), dim=-1
-        )
-        ellip1_lsst = tile_dict["ellip1_lsst_sum"] / (
-            tile_dict["ellip1_lsst_count"]
-            + (tile_dict["ellip1_lsst_count"] == 0)
-            * torch.ones_like(tile_dict["ellip1_lsst_count"])
-        )
-        ellip2_lsst = tile_dict["ellip2_lsst_sum"] / (
-            tile_dict["ellip2_lsst_count"]
-            + (tile_dict["ellip2_lsst_count"] == 0)
-            * torch.ones_like(tile_dict["ellip2_lsst_count"])
-        )
-        ellip_lsst = torch.stack(
-            (ellip1_lsst.squeeze(-1), ellip2_lsst.squeeze(-1)), dim=-1
-        )
-        redshift = tile_dict["redshift_sum"] / (
-            tile_dict["redshift_count"]
-            + (tile_dict["redshift_count"] == 0)
-            * torch.ones_like(tile_dict["redshift_count"])
-        )
-        ra = tile_dict["ra_sum"] / (
-            tile_dict["ra_count"]
-            + (tile_dict["ra_count"] == 0) * torch.ones_like(tile_dict["ra_count"])
-        )
-        dec = tile_dict["dec_sum"] / (
-            tile_dict["dec_count"]
-            + (tile_dict["dec_count"] == 0) * torch.ones_like(tile_dict["dec_count"])
-        )
-
-        tile_dict["shear_1"] = shear1
-        tile_dict["shear_2"] = shear2
-        tile_dict["shear1_shear2"] = torch.cat([shear1, shear2], dim=-1)
-        tile_dict["convergence"] = convergence
-        tile_dict["shear1_shear2_convergence"] = torch.cat(
-            [shear1, shear2, convergence], dim=-1
-        )
-        tile_dict["ellip_lensed"] = ellip_lensed
-        tile_dict["ellip_lsst"] = ellip_lsst
-        tile_dict["ellip_lsst_wavg"] = compute_weighted_avg_ellip(
-            tile_dict, self.avg_ellip_kernel_size, self.avg_ellip_kernel_sigma
-        )
-        tile_dict["redshift"] = redshift
-        tile_dict["ra"] = ra
-        tile_dict["dec"] = dec
-
-        data_splits = self.split_image_and_tile_cat(
-            image, tile_dict, tile_dict.keys(), psf_params
-        )
-
-        data_to_cache = unpack_dict(data_splits)
-
-        for i in range(self.n_image_split**2):
-            r = int(
-                1000
-                * round(
-                    data_to_cache[i]["tile_catalog"]["ra"].abs().nanmedian().item(), 3
-                )
-            )
-            test_set_mask = int(r < 56400)
-            d = int(
-                1000
-                * round(
-                    data_to_cache[i]["tile_catalog"]["dec"].abs().nanmedian().item(), 3
-                )
-            )
-            cached_data_file_name = f"cached_data_dec{test_set_mask}{d}_ra{r}_size_1.pt"
-            tmp = data_to_cache[i]
-            tmp_clone = map_nested_dicts(
-                tmp, lambda x: x.clone() if isinstance(x, torch.Tensor) else x
-            )
-            with open(
-                self.cached_data_path / cached_data_file_name, "wb"
-            ) as cached_data_file:
-                torch.save([tmp_clone], cached_data_file)
-
 
 class LensingDC2Catalog:
     """Standalone catalog class for lensing DC2 data."""
@@ -441,12 +302,6 @@ class LensingDC2Catalog:
 
     def keys(self):
         return self.data.keys()
-
-    @classmethod
-    def read_catalog(cls, cat_path, wcs, height, width, **kwargs):
-        """Read and process catalog from pickle file."""
-        catalog = pd.read_pickle(cat_path)
-        return cls.from_dataframe(catalog, wcs, height, width, **kwargs)
 
     @classmethod
     def from_dataframe(cls, catalog, wcs, height, width, **kwargs):

@@ -238,7 +238,12 @@ class CachedSimulatedDataModule(L.LightningDataModule):
                 excluded.add(os.path.basename(stripped))
         return excluded
 
-    def _load_file_paths_and_slices(self):
+    def _filter_file_names(self, file_names: list[str]) -> list[str]:
+        """Hook for subclasses to select cached files before splitting."""
+        return file_names
+
+    def _list_file_names(self) -> list[str]:
+        """Sorted cached file names after the exclusion list and subclass filter."""
         file_names = [
             f
             for f in sorted(os.listdir(str(self.cached_data_path)))
@@ -255,6 +260,10 @@ class CachedSimulatedDataModule(L.LightningDataModule):
                 self.exclude_file_list_path,
                 len(file_names),
             )
+        return self._filter_file_names(file_names)
+
+    def _load_file_paths_and_slices(self):
+        file_names = self._list_file_names()
         if self.shuffle_file_order:
             random.shuffle(file_names)
         if self.subset_fraction:

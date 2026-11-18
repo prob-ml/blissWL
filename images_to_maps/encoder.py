@@ -9,6 +9,7 @@ from torch.optim.lr_scheduler import MultiStepLR
 from torchmetrics import MetricCollection
 
 from images_to_maps.convnet import MassMapNet, ScalarShearNet
+from images_to_maps.utils.tile_mask import crop_catalog_to_mask, get_tile_mask
 from images_to_maps.variational_dist import VariationalDist
 
 
@@ -33,6 +34,7 @@ class MassMapEncoder(L.LightningModule):
         mode_metrics: MetricCollection,
         sample_metrics: Optional[MetricCollection],
         sample_image_renders: MetricCollection,
+        loss_mask_key: Optional[str] = None,
     ):
         super().__init__()
 
@@ -54,6 +56,9 @@ class MassMapEncoder(L.LightningModule):
         self.mode_metrics = mode_metrics
         self.sample_metrics = sample_metrics
         self.sample_image_renders = sample_image_renders
+        # Batch key of a per-tile bool mask restricting the loss and metrics
+        # (e.g. "loss_mask" for padded crop interiors); None uses all tiles.
+        self.loss_mask_key = loss_mask_key
 
         self.initialize_networks()
         self.epoch_train_losses = []
@@ -102,8 +107,14 @@ class MassMapEncoder(L.LightningModule):
         pred = {}
         pred["x_cat_marginal"] = self.net(inputs)
 
-        loss = self.var_dist.compute_nll(pred["x_cat_marginal"], target_cat)
-        loss = loss.sum() / loss.numel()
+        nll = self.var_dist.compute_nll(pred["x_cat_marginal"], target_cat)
+        mask = get_tile_mask(batch, self.loss_mask_key, *nll.shape[1:3])
+        if mask is None:
+            loss = nll.sum() / nll.numel()
+        else:
+            # mean NLL over masked tiles; torch.where keeps non-finite values
+            # in unmasked tiles out of the loss and its gradient
+            loss = torch.where(mask, nll, 0.0).sum() / mask.sum()
 
         self.log(f"{logging_name}/_loss", loss, batch_size=batch_size, sync_dist=True)
 
@@ -126,10 +137,22 @@ class MassMapEncoder(L.LightningModule):
         target_cat = batch["tile_catalog"]
 
         mode_cat = self.sample(batch, use_mode=True)
-        self.mode_metrics.update(target_cat, mode_cat, None)
-
         sample_cat_no_mode = self.sample(batch, use_mode=False)
-        self.sample_metrics.update(target_cat, sample_cat_no_mode, None)
+
+        # metrics use the same tiles as the loss; the rendered maps stay full size
+        target_metric_cat, mode_metric_cat, sample_metric_cat = (
+            target_cat,
+            mode_cat,
+            sample_cat_no_mode,
+        )
+        mask = get_tile_mask(batch, self.loss_mask_key, *mode_cat["shear_1"].shape[1:3])
+        if mask is not None:
+            target_metric_cat = crop_catalog_to_mask(target_cat, mask)
+            mode_metric_cat = crop_catalog_to_mask(mode_cat, mask)
+            sample_metric_cat = crop_catalog_to_mask(sample_cat_no_mode, mask)
+
+        self.mode_metrics.update(target_metric_cat, mode_metric_cat, None)
+        self.sample_metrics.update(target_metric_cat, sample_metric_cat, None)
 
         self.sample_image_renders.update(
             target_cat,

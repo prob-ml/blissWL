@@ -4,8 +4,6 @@ These are local copies of utilities from bliss core modules to make the
 weak lensing DC2 case study fully standalone.
 """
 
-import collections
-
 import numpy as np
 import torch
 from astropy.io.fits import Header
@@ -15,33 +13,6 @@ from astropy.wcs import WCS
 def wcs_from_wcs_header_str(wcs_header_str: str):
     """Parse WCS from FITS header string."""
     return WCS(Header.fromstring(wcs_header_str))
-
-
-def map_nested_dicts(cur_dict, func):
-    """Recursively apply a function to all values in a nested dict."""
-    if isinstance(cur_dict, collections.abc.Mapping):
-        return {k: map_nested_dicts(v, func) for k, v in cur_dict.items()}
-    return func(cur_dict)
-
-
-def unpack_dict(ori_dict):
-    """Convert dict of lists to list of dicts."""
-    return [
-        dict(zip(ori_dict, v, strict=True))
-        for v in zip(*ori_dict.values(), strict=True)
-    ]
-
-
-def split_tensor(ori_tensor, split_size, split_first_dim, split_second_dim):
-    """Split a tensor along two dimensions into a list of sub-tensors."""
-    tensor_splits = torch.stack(ori_tensor.split(split_size, dim=split_first_dim))
-    tensor_splits = torch.stack(
-        tensor_splits.split(split_size, dim=split_second_dim + 1), dim=1
-    )
-    return [
-        sub_tensor.squeeze(0)
-        for sub_tensor in tensor_splits.flatten(0, 1).split(1, dim=0)
-    ]
 
 
 def plocs_from_ra_dec(ras, decs, wcs):
