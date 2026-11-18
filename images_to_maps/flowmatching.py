@@ -256,7 +256,7 @@ class FlowMatching(L.LightningModule):
         mask = get_tile_mask(batch, self.loss_mask_key, n_tiles_h, n_tiles_w)
 
         def metric_cat(catalog):
-            # metrics use the same tiles as the loss; rendered maps stay full size
+            # metrics and rendered maps use the same tiles as the loss
             return catalog if mask is None else crop_catalog_to_mask(catalog, mask)
 
         with torch.no_grad():
@@ -271,7 +271,10 @@ class FlowMatching(L.LightningModule):
 
             if self.sample_image_renders is not None:
                 self.sample_image_renders.update(
-                    target_cat, mode_cat, self.current_epoch, batch_idx
+                    metric_cat(target_cat),
+                    metric_cat(mode_cat),
+                    self.current_epoch,
+                    batch_idx,
                 )
 
     def report_metrics(self, metrics, logging_name):

@@ -139,7 +139,7 @@ class MassMapEncoder(L.LightningModule):
         mode_cat = self.sample(batch, use_mode=True)
         sample_cat_no_mode = self.sample(batch, use_mode=False)
 
-        # metrics use the same tiles as the loss; the rendered maps stay full size
+        # metrics and rendered maps use the same tiles as the loss
         target_metric_cat, mode_metric_cat, sample_metric_cat = (
             target_cat,
             mode_cat,
@@ -155,8 +155,8 @@ class MassMapEncoder(L.LightningModule):
         self.sample_metrics.update(target_metric_cat, sample_metric_cat, None)
 
         self.sample_image_renders.update(
-            target_cat,
-            mode_cat,
+            target_metric_cat,
+            mode_metric_cat,
             self.current_epoch,
             batch_idx,
         )
