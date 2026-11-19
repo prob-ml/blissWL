@@ -137,6 +137,7 @@ train:
             _target_: lightning.pytorch.callbacks.ModelCheckpoint
             filename: "encoder_{epoch}"
             save_top_k: 1
+            save_last: true  # last.ckpt, for resuming after a time limit
             verbose: true
             monitor: val/_loss
             mode: min
