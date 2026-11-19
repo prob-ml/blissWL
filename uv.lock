@@ -346,7 +346,7 @@ requires-dist = [
     { name = "omegaconf", specifier = ">=2.3.0" },
     { name = "pandas", specifier = ">=2.0.0" },
     { name = "pyarrow", specifier = ">=24.0.0" },
-    { name = "pyccl", specifier = ">=3.2.1" },
+    { name = "pyccl", specifier = ">=3.3.6" },
     { name = "sbi-lens", git = "https://github.com/timwhite0/sbi_lens.git" },
     { name = "seaborn", specifier = ">=0.13.2" },
     { name = "tensorboard", specifier = ">=2.18.0" },
@@ -2601,12 +2601,21 @@ wheels = [
 
 [[package]]
 name = "pyccl"
-version = "3.2.1"
+version = "3.3.6"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "numpy" },
+    { name = "packaging" },
+    { name = "pyyaml" },
+    { name = "scipy" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/eb/c1/947de68acf4cf908766094f14464fd093cfb607d55006ddcbd9526d04c20/pyccl-3.2.1.tar.gz", hash = "sha256:40c3556791bc7ae9ce32c2ad663998f145c5ace883557b2c9cd8c234b54bd383", size = 16827337, upload-time = "2025-06-10T19:31:22.953Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/d5/76/dc091056f1af48e6cb56d651dac6eb8494dd2515547d9543c0ce5365b873/pyccl-3.3.6.tar.gz", hash = "sha256:fd6c0181381eb57345ec9b56bdcf9300c9a31a42014aa9c8ced95f31ace16795", size = 16790489, upload-time = "2026-07-28T09:29:17.738Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/09/9a/821afc748dadcd8f5bebda4b37ee9dab8f64c92b223e442d9898040714de/pyccl-3.3.6-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:957d9699b8ceec596e0f54932c185e7d1e953486e1e7445261306e8a2aa40d98", size = 3057423, upload-time = "2026-07-28T09:29:08.824Z" },
+    { url = "https://files.pythonhosted.org/packages/86/95/4183630d8e67133e5d066d388f3852580d4de8baa592506c28a80274e34c/pyccl-3.3.6-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:b0077f51318c2f3112682d37febc75b4334152a8c8338dff19b484cdd25cf9a7", size = 3708004, upload-time = "2026-07-28T09:29:10.256Z" },
+    { url = "https://files.pythonhosted.org/packages/7d/66/c64c214e680539e9dfa8266af7749a474cdefa81a3753ff887a2dfb5a7d3/pyccl-3.3.6-cp313-cp313-macosx_11_0_arm64.whl", hash = "sha256:f2221b1aeb88adae11168faeb798003893bdaec0a9c6c9e5385694aab52e5f25", size = 3057374, upload-time = "2026-07-28T09:29:11.808Z" },
+    { url = "https://files.pythonhosted.org/packages/af/86/df2caee376a298ceee5afd13c348371a2537d47aea30e5316d8fc6277004/pyccl-3.3.6-cp313-cp313-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:4a943004beee16b72f4c1464008904127831b760f5c1906ea430f9bc92601380", size = 3707324, upload-time = "2026-07-28T09:29:13.224Z" },
+]
 
 [[package]]
 name = "pycparser"
