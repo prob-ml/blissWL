@@ -33,7 +33,7 @@ This module implements neural posterior estimation (NPE) for inferring weak lens
 python -u images_to_maps/dc2/generate_dc2_cache.py --write-catalogs
 ```
 
-This reads the DC2 coadds and truth/object tables from `/nfs/turbo/lsa-regier/dc2_nersc`, joins them to CosmoDC2 lensing quantities, and writes overlapping 2048 x 2048 padded crops (images and 8 x 8 tile target maps) to `/nfs/turbo/lsa-regier/dc2_wl`. The tracts come from `surveys.dc2.tracts` in `config_train_npe.yaml`. With `--write-catalogs`, every merged per-tract galaxy catalog the generator builds is also saved to `/nfs/turbo/lsa-regier/dc2_wl_catalog/tract_<tract>.parquet`. This includes neighboring tracts whose galaxies fall in crops near the tract edges. The exploratory notebooks read these catalogs. Existing files are skipped unless `--overwrite` is passed.
+This reads the DC2 coadds and truth/object tables from `/nfs/turbo/lsa-regier/dc2_nersc`, joins them to CosmoDC2 lensing quantities, and writes overlapping 2048 x 2048 padded crops (images and 8 x 8 tile target maps) to `/nfs/turbo/lsa-regier/dc2_wl`. The crops lie on each tract's pixel grid (27 x 27 crops per tract), and their central 4 x 4 tiles tile the tract with no gaps or overlaps. The tracts come from `surveys.dc2.tracts` in `config_train_npe.yaml`. With `--write-catalogs`, every merged per-tract galaxy catalog the generator builds is also saved to `/nfs/turbo/lsa-regier/dc2_wl_catalog/tract_<tract>.parquet`. This includes neighboring tracts whose galaxies fall in crops near the tract edges. The exploratory notebooks read these catalogs. Existing files are skipped unless `--overwrite` is passed.
 
 #### Train
 

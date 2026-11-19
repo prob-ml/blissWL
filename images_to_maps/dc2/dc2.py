@@ -17,27 +17,23 @@ from omegaconf import OmegaConf
 from images_to_maps.cached_dataset import CachedSimulatedDataModule
 from images_to_maps.dc2.utils import get_bands_flux_and_psf, plocs_from_ra_dec
 
-PADDED_CROP_RE = re.compile(
-    r"^tract_(?P<tract>\d+)_patch_(?P<patch_x>\d+)_(?P<patch_y>\d+)"
-    r"_padded_crop_(?P<crop_row>\d+)_(?P<crop_col>\d+)_"
+# Padded crops on a tract's pixel grid, written by generate_dc2_cache.py.
+TRACT_CROP_RE = re.compile(
+    r"^tract_(?P<tract>\d+)_crop_(?P<crop_row>\d+)_(?P<crop_col>\d+)_size_1\.pt$"
 )
-# Padded crops step by their 4x4-tile interior over a 16x16-tile patch.
-CROPS_PER_PATCH_SIDE = 4
 HELD_OUT_SPLITS = ("test", "val")  # earlier entries take precedence
 
 
 def padded_crop_position(file_name: str) -> tuple[int, int, int]:
     """Tract and crop row/column in the tract's crop grid (row 0 is the south edge)."""
-    match = PADDED_CROP_RE.match(file_name)
+    match = TRACT_CROP_RE.match(file_name)
     if match is None:
         raise ValueError(f"Not a padded crop file name: {file_name}")
-    crop_row = int(match.group("crop_row"))
-    crop_col = int(match.group("crop_col"))
-    if crop_row >= CROPS_PER_PATCH_SIDE or crop_col >= CROPS_PER_PATCH_SIDE:
-        raise ValueError(f"Unexpected crop index in {file_name}")
-    row = CROPS_PER_PATCH_SIDE * int(match.group("patch_y")) + crop_row
-    col = CROPS_PER_PATCH_SIDE * int(match.group("patch_x")) + crop_col
-    return int(match.group("tract")), row, col
+    return (
+        int(match.group("tract")),
+        int(match.group("crop_row")),
+        int(match.group("crop_col")),
+    )
 
 
 def assign_crop_splits(

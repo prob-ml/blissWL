@@ -3,8 +3,16 @@
 This generator writes overlapping ``2048 x 2048`` image crops.  Each crop has
 an ``8 x 8`` tile target map, but only the central ``4 x 4`` tiles are meant to
 contribute to loss/evaluation by default.  The two-tile image border is context.
-With the default ``256 x 256`` target tiles, this gives ``4 x 4`` crops per
-nominal DC2 patch.
+
+Crops are laid out on each tract's pixel grid, which all of its patches share:
+crop ``(r, c)`` has its interior at tract pixels ``[1024 r, 1024 r + 1024) x
+[1024 c, 1024 c + 1024)`` (with the default ``256``-pixel tiles), so the
+interiors tile the tract with no gaps or overlaps.  Row 0 is the south edge.
+A DC2 tract is ``28000 x 28000`` pixels, giving ``27 x 27`` crops whose
+interiors are all native tract pixels.  Patches overlap their neighbors and
+differ in the overlap, so each tract pixel is taken from the patch whose inner
+region contains it; border pixels beyond the tract edge come from neighboring
+tracts.  Files are named ``tract_<tract>_crop_<row>_<col>_size_1.pt``.
 
 Images are read from the NERSC DC2 layout (``paths.dc2``).  Target maps are
 built from the DC2 truth and object tables joined to CosmoDC2 lensing fields.
@@ -77,6 +85,10 @@ DEFAULT_OUTPUT = Path("/nfs/turbo/lsa-regier/dc2_wl")
 DEFAULT_CATALOG_OUTPUT = Path("/nfs/turbo/lsa-regier/dc2_wl_catalog")
 DEFAULT_REDSHIFT_QUANTILES = [0.00, 0.762988, 1.120420, 1.592735]
 COPY_WCS_ATOL_DEG = 1.0e-8
+# DC2 skymap: patches step by PATCH_INNER_SLEN pixels within a tract and extend
+# PATCH_BORDER pixels past their inner region (clipped at the tract edge).
+PATCH_INNER_SLEN = 4000
+PATCH_BORDER = 100
 
 TRUTH_COLUMNS = [
     "truth_type",
@@ -527,6 +539,8 @@ class PatchFootprint:
     width: int
     height: int
     bounds: tuple[float, float, float, float]
+    origin_x: int  # position of the patch's pixel (0, 0) in its tract's pixel grid
+    origin_y: int
 
     @property
     def wcs(self) -> WCS:
@@ -536,14 +550,41 @@ class PatchFootprint:
     def source_name(self) -> str:
         return f"{self.tract}_{self.patch}"
 
+    @property
+    def inner_box(self) -> tuple[int, int, int, int]:
+        """Patch-pixel ``(x0, x1, y0, y1)`` of the patch's inner region.
+
+        Neighboring patches overlap by ``2 * PATCH_BORDER`` pixels, and their
+        pixel values differ there (each patch is coadded separately).  The inner
+        regions tile the tract exactly, so each tract pixel is taken from the one
+        patch whose inner region contains it.
+        """
+        patch_x, patch_y = (int(value) for value in self.patch.split(","))
+        x0 = PATCH_INNER_SLEN * patch_x - self.origin_x
+        y0 = PATCH_INNER_SLEN * patch_y - self.origin_y
+        return x0, x0 + PATCH_INNER_SLEN, y0, y0 + PATCH_INNER_SLEN
+
+
+@dataclass(frozen=True)
+class TractGrid:
+    """A tract's pixel grid, shared by all of its patches."""
+
+    tract: int
+    wcs_header_str: str
+    width: int
+    height: int
+
+    @property
+    def wcs(self) -> WCS:
+        return wcs_from_wcs_header_str(self.wcs_header_str)
+
 
 @dataclass(frozen=True)
 class CropSpec:
     nominal_tract: int
-    nominal_patch: str
-    crop_row: int
+    crop_row: int  # row 0 is the south edge of the tract
     crop_col: int
-    origin_x: int
+    origin_x: int  # crop pixel (0, 0) in the tract's pixel grid
     origin_y: int
     index: int
 
@@ -566,6 +607,11 @@ def read_patch_footprint(dc2_root: Path, tract: int, patch: str) -> PatchFootpri
         header = hdul[1].header
         height, width = header_shape(header)
         wcs_header_str = header.tostring()
+        # LTV is minus the patch's pixel offset within the tract.
+        if "LTV1" not in header or "LTV2" not in header:
+            raise ValueError(f"{path_by_band['r']} has no LTV1/LTV2 keywords")
+        origin_x = -int(round(header["LTV1"]))
+        origin_y = -int(round(header["LTV2"]))
     bounds = patch_sky_bounds(wcs_header_str, height, width)
     return PatchFootprint(
         tract=tract,
@@ -575,6 +621,8 @@ def read_patch_footprint(dc2_root: Path, tract: int, patch: str) -> PatchFootpri
         width=width,
         height=height,
         bounds=bounds,
+        origin_x=origin_x,
+        origin_y=origin_y,
     )
 
 
@@ -613,6 +661,69 @@ def tract_footprint_bounds(
     )
 
 
+def tract_grid(
+    footprints: dict[tuple[int, str], PatchFootprint], tract: int
+) -> TractGrid:
+    """The tract's pixel grid, checked against every one of its patches.
+
+    Each patch must share the tract WCS (up to its pixel offset), contain its
+    inner region, and the inner regions must tile the tract.
+    """
+    tract_patches = [fp for (t, _), fp in footprints.items() if t == tract]
+    if not tract_patches:
+        raise ValueError(f"No patch footprints found for tract={tract}")
+
+    tract_wcs = crop_wcs(
+        tract_patches[0].wcs, -tract_patches[0].origin_x, -tract_patches[0].origin_y
+    )
+    width = max(fp.origin_x + fp.width for fp in tract_patches)
+    height = max(fp.origin_y + fp.height for fp in tract_patches)
+    n_x, n_y = width // PATCH_INNER_SLEN, height // PATCH_INNER_SLEN
+    if (n_x * PATCH_INNER_SLEN, n_y * PATCH_INNER_SLEN) != (width, height):
+        raise ValueError(f"tract={tract}: {width} x {height} px is not whole patches")
+    expected = {f"{x},{y}" for x in range(n_x) for y in range(n_y)}
+    if {fp.patch for fp in tract_patches} != expected:
+        raise ValueError(f"tract={tract}: patches do not form a {n_x} x {n_y} grid")
+
+    for fp in tract_patches:
+        patch_x, patch_y = (int(value) for value in fp.patch.split(","))
+        expected_origin = (
+            max(0, PATCH_INNER_SLEN * patch_x - PATCH_BORDER),
+            max(0, PATCH_INNER_SLEN * patch_y - PATCH_BORDER),
+        )
+        if (fp.origin_x, fp.origin_y) != expected_origin:
+            raise ValueError(
+                f"{fp.source_name}: origin {(fp.origin_x, fp.origin_y)}, "
+                f"expected {expected_origin}"
+            )
+        x0, x1, y0, y1 = fp.inner_box
+        if x0 < 0 or y0 < 0 or x1 > fp.width or y1 > fp.height:
+            raise ValueError(f"{fp.source_name}: inner region is outside the patch")
+        patch_tract_wcs = crop_wcs(fp.wcs, -fp.origin_x, -fp.origin_y)
+        if not (
+            np.allclose(
+                patch_tract_wcs.wcs.crpix, tract_wcs.wcs.crpix, rtol=0, atol=1e-6
+            )
+            and np.allclose(
+                patch_tract_wcs.wcs.crval, tract_wcs.wcs.crval, rtol=0, atol=1e-12
+            )
+            and np.allclose(
+                patch_tract_wcs.pixel_scale_matrix,
+                tract_wcs.pixel_scale_matrix,
+                rtol=0,
+                atol=1e-15,
+            )
+        ):
+            raise ValueError(f"{fp.source_name}: WCS differs from the tract WCS")
+
+    return TractGrid(
+        tract=tract,
+        wcs_header_str=tract_wcs.to_header().tostring(),
+        width=width,
+        height=height,
+    )
+
+
 def crop_wcs(anchor_wcs: WCS, origin_x: int, origin_y: int) -> WCS:
     wcs = anchor_wcs.deepcopy()
     wcs.wcs.crpix = anchor_wcs.wcs.crpix - np.array([origin_x, origin_y], dtype=float)
@@ -631,29 +742,29 @@ def crop_bounds(wcs: WCS, crop_slen: int) -> tuple[float, float, float, float]:
     )
 
 
-def patch_sort_key(
-    item: tuple[tuple[int, str], PatchFootprint],
-) -> tuple[int, int, int]:
-    (tract, patch), _footprint = item
-    patch_x, patch_y = (int(value) for value in patch.split(","))
-    return tract, patch_y, patch_x
+def crop_grid_shape(grid: TractGrid, stride: int) -> tuple[int, int]:
+    """Crop rows and columns of a tract: as many interiors as fit inside it.
+
+    Interiors never extend past the tract, so every interior pixel is a native
+    pixel of the tract; a strip narrower than ``stride`` along the north and
+    west (high-x) edges is not covered by any interior.
+    """
+    return grid.height // stride, grid.width // stride
 
 
-def iter_crop_specs_for_patches(
-    selected_footprints: dict[tuple[int, str], PatchFootprint],
+def iter_crop_specs_for_tracts(
+    grids: dict[int, TractGrid],
     tile_slen: int,
     interior_tiles: int,
     border_tiles: int,
 ) -> list[CropSpec]:
+    """Crops on each tract's pixel grid; crop (r, c)'s interior starts at
+    tract pixel ``(c, r) * interior_tiles * tile_slen``."""
+    stride = interior_tiles * tile_slen
     specs: list[CropSpec] = []
     crop_index = 0
-    for (tract, patch), footprint in sorted(
-        selected_footprints.items(), key=patch_sort_key
-    ):
-        patch_tiles_x = footprint.width // tile_slen
-        patch_tiles_y = footprint.height // tile_slen
-        n_cols = (patch_tiles_x + interior_tiles - 1) // interior_tiles
-        n_rows = (patch_tiles_y + interior_tiles - 1) // interior_tiles
+    for tract, grid in sorted(grids.items()):
+        n_rows, n_cols = crop_grid_shape(grid, stride)
         for row in range(n_rows):
             origin_y = (row * interior_tiles - border_tiles) * tile_slen
             for col in range(n_cols):
@@ -661,7 +772,6 @@ def iter_crop_specs_for_patches(
                 specs.append(
                     CropSpec(
                         nominal_tract=tract,
-                        nominal_patch=patch,
                         crop_row=row,
                         crop_col=col,
                         origin_x=origin_x,
@@ -699,24 +809,20 @@ def source_candidates(
     bounds: tuple[float, float, float, float],
     padding: float,
     nominal_tract: int,
-    nominal_patch: str,
 ) -> list[PatchFootprint]:
+    """Patches that may supply a crop's pixels, nominal tract first.
+
+    Each patch supplies only its inner region, so patches of one tract never
+    compete for a pixel; other tracts fill only what the nominal tract leaves
+    unfilled (outside its edges).
+    """
     candidates = [
         fp
         for fp in sorted(footprints.values(), key=lambda item: (item.tract, item.patch))
         if bounds_overlap(bounds, fp.bounds, padding=padding)
     ]
     return [
-        *[
-            fp
-            for fp in candidates
-            if fp.tract == nominal_tract and fp.patch == nominal_patch
-        ],
-        *[
-            fp
-            for fp in candidates
-            if fp.tract == nominal_tract and fp.patch != nominal_patch
-        ],
+        *[fp for fp in candidates if fp.tract == nominal_tract],
         *[fp for fp in candidates if fp.tract != nominal_tract],
     ]
 
@@ -762,10 +868,15 @@ def copy_aligned_patch_pixels(
     offset_y: int,
     crop_slen: int,
 ) -> bool:
-    dst_x0 = max(0, -offset_x)
-    dst_y0 = max(0, -offset_y)
-    dst_x1 = min(crop_slen, footprint.width - offset_x)
-    dst_y1 = min(crop_slen, footprint.height - offset_y)
+    """Copy the patch's inner-region pixels into the unfilled crop pixels.
+
+    Returns False if the inner region does not overlap the crop.
+    """
+    inner_x0, inner_x1, inner_y0, inner_y1 = footprint.inner_box
+    dst_x0 = max(0, inner_x0 - offset_x)
+    dst_y0 = max(0, inner_y0 - offset_y)
+    dst_x1 = min(crop_slen, inner_x1 - offset_x)
+    dst_y1 = min(crop_slen, inner_y1 - offset_y)
     if dst_x0 >= dst_x1 or dst_y0 >= dst_y1:
         return False
 
@@ -799,11 +910,20 @@ def resample_patch_pixels(
     ra, dec = target_wcs.pixel_to_world_values(xx, yy)
     source_wcs = footprint.wcs
     sx, sy = source_wcs.world_to_pixel_values(ra, dec)
+    # A crop pixel belongs to this patch if the nearest source pixel is in the
+    # patch's inner region, so adjacent patches' inner regions leave no gaps.
+    inner_x0, inner_x1, inner_y0, inner_y1 = footprint.inner_box
+    nearest_x = np.floor(sx + 0.5)
+    nearest_y = np.floor(sy + 0.5)
     valid = (
         (sx >= 0)
         & (sx <= footprint.width - 1)
         & (sy >= 0)
         & (sy <= footprint.height - 1)
+        & (nearest_x >= inner_x0)
+        & (nearest_x < inner_x1)
+        & (nearest_y >= inner_y0)
+        & (nearest_y < inner_y1)
         & (source_id == 0)
     )
     if not valid.any():
@@ -821,7 +941,13 @@ def assemble_crop_image(
     image_cache: PatchImageCache,
     target_wcs: WCS,
     crop_slen: int,
+    nominal_tract: int,
 ) -> tuple[torch.Tensor, torch.Tensor, dict[int, str]]:
+    """Fill the crop from the patches' inner regions, in ``footprints`` order.
+
+    Patches of the nominal tract share the crop's pixel grid and are copied;
+    other tracts are copied if their grids line up, otherwise resampled.
+    """
     image = np.zeros((len(BANDS), crop_slen, crop_slen), dtype=np.float32)
     source_id = np.zeros((crop_slen, crop_slen), dtype=np.int16)
     source_names = {0: "unfilled"}
@@ -829,17 +955,20 @@ def assemble_crop_image(
     for sid, footprint in enumerate(footprints, start=1):
         source_names[sid] = footprint.source_name
         offset = copy_offset_if_aligned(target_wcs, footprint.wcs)
-        if offset is not None and copy_aligned_patch_pixels(
-            image,
-            source_id,
-            image_cache,
-            footprint,
-            sid,
-            offset[0],
-            offset[1],
-            crop_slen,
-        ):
+        if offset is not None:
+            copy_aligned_patch_pixels(
+                image,
+                source_id,
+                image_cache,
+                footprint,
+                sid,
+                offset[0],
+                offset[1],
+                crop_slen,
+            )
             continue
+        if footprint.tract == nominal_tract:
+            raise ValueError(f"{footprint.source_name} is not on the tract pixel grid")
         resample_patch_pixels(
             image, source_id, image_cache, footprint, sid, target_wcs, crop_slen
         )
@@ -871,31 +1000,19 @@ def interior_mask(args) -> torch.Tensor:
     return mask
 
 
-def patch_tile_row_col(args, spec: CropSpec) -> torch.Tensor:
+def tract_tile_row_col(args, spec: CropSpec) -> torch.Tensor:
+    """``(crop_tiles, crop_tiles, 2)`` row/column of each crop tile in the tract's
+    tile grid; border tiles at the tract edges fall outside ``[0, n)``."""
     rows = spec.origin_y // args.tile_slen + torch.arange(args.crop_tiles)
     cols = spec.origin_x // args.tile_slen + torch.arange(args.crop_tiles)
     row_grid, col_grid = torch.meshgrid(rows, cols, indexing="ij")
     return torch.stack([row_grid, col_grid], dim=-1).to(torch.int64)
 
 
-def patch_output_tile_mask(
-    args, spec: CropSpec, footprint: PatchFootprint
-) -> torch.Tensor:
-    patch_tiles_y = footprint.height // args.tile_slen
-    patch_tiles_x = footprint.width // args.tile_slen
-    mask = torch.zeros((args.crop_tiles, args.crop_tiles), dtype=torch.bool)
-    tile_row_col = patch_tile_row_col(args, spec)
-    central = interior_mask(args)
-    for row in range(args.crop_tiles):
-        for col in range(args.crop_tiles):
-            patch_row = int(tile_row_col[row, col, 0].item())
-            patch_col = int(tile_row_col[row, col, 1].item())
-            mask[row, col] = (
-                bool(central[row, col])
-                and 0 <= patch_row < patch_tiles_y
-                and 0 <= patch_col < patch_tiles_x
-            )
-    return mask
+def tract_shape_tiles(args, grid: TractGrid) -> tuple[int, int]:
+    """Rows and columns of the tract tile grid covered by crop interiors."""
+    n_rows, n_cols = crop_grid_shape(grid, args.stride)
+    return n_rows * args.interior_tiles, n_cols * args.interior_tiles
 
 
 def make_data_module(args) -> LensingDC2DataModule:
@@ -955,29 +1072,17 @@ def build_tile_payload(
 
 
 def flat_output_file(args, spec: CropSpec) -> Path:
-    """Output path for a crop, reusing the existing file name if there is one.
-
-    The ``idx`` field is the crop's position in the run that first wrote it, so it
-    depends on which tracts that run selected.  Matching on the rest of the name
-    keeps reruns with a different tract selection from writing duplicates.
-    """
-    patch_label = spec.nominal_patch.replace(",", "_")
-    prefix = (
-        f"tract_{spec.nominal_tract}_patch_{patch_label}"
-        f"_padded_crop_{spec.crop_row}_{spec.crop_col}"
+    """Output path for a crop; the name must match ``TRACT_CROP_RE`` in dc2.py."""
+    return (
+        args.output
+        / f"tract_{spec.nominal_tract}_crop_{spec.crop_row:02d}_{spec.crop_col:02d}_size_1.pt"
     )
-    existing = sorted(args.output.glob(f"{prefix}_idx_*_size_1.pt"))
-    if len(existing) > 1:
-        raise RuntimeError(f"Multiple cache files for one crop: {existing}")
-    if existing:
-        return existing[0]
-    return args.output / f"{prefix}_idx_{spec.index:06d}_size_1.pt"
 
 
 def write_example(
     args,
     spec: CropSpec,
-    nominal_footprint: PatchFootprint,
+    grid: TractGrid,
     image: torch.Tensor,
     source_id: torch.Tensor,
     source_names: dict[int, str],
@@ -988,9 +1093,8 @@ def write_example(
     candidate_sources: list[PatchFootprint],
 ) -> Path:
     mask = interior_mask(args)
-    patch_mask = patch_output_tile_mask(args, spec, nominal_footprint)
     image_valid_tile_mask = tile_valid_mask(source_id, args.tile_slen)
-    loss_mask = patch_mask & image_valid_tile_mask
+    loss_mask = mask & image_valid_tile_mask
 
     datum = {
         "images": image,
@@ -1000,26 +1104,18 @@ def write_example(
         },
         "psf_params": psf_params,
         "interior_mask": mask,
-        "nominal_patch_tile_mask": patch_mask,
         "image_valid_tile_mask": image_valid_tile_mask,
         "loss_mask": loss_mask,
         "source_id": source_id,
         "source_names": source_names,
         "nominal_tract": spec.nominal_tract,
-        "nominal_patch": spec.nominal_patch,
-        "patch_crop_row_col": torch.tensor(
-            [spec.crop_row, spec.crop_col], dtype=torch.int64
-        ),
-        "patch_crop_origin_xy": torch.tensor(
+        "crop_row_col": torch.tensor([spec.crop_row, spec.crop_col], dtype=torch.int64),
+        "crop_origin_xy": torch.tensor(
             [spec.origin_x, spec.origin_y], dtype=torch.int64
         ),
-        "patch_tile_row_col": patch_tile_row_col(args, spec),
-        "patch_output_shape_tiles": torch.tensor(
-            [
-                nominal_footprint.height // args.tile_slen,
-                nominal_footprint.width // args.tile_slen,
-            ],
-            dtype=torch.int64,
+        "tract_tile_row_col": tract_tile_row_col(args, spec),
+        "tract_shape_tiles": torch.tensor(
+            tract_shape_tiles(args, grid), dtype=torch.int64
         ),
         "crop_bounds_ra_dec": torch.tensor(crop_bounds_, dtype=torch.float64),
         "wcs_header_str": target_wcs.to_header().tostring(),
@@ -1047,10 +1143,9 @@ def crop_summary(
     return {
         "file": str(out),
         "nominal_tract": spec.nominal_tract,
-        "nominal_patch": spec.nominal_patch,
         "crop_index": spec.index,
-        "patch_crop_row_col": [spec.crop_row, spec.crop_col],
-        "patch_crop_origin_xy": [spec.origin_x, spec.origin_y],
+        "crop_row_col": [spec.crop_row, spec.crop_col],
+        "crop_origin_xy": [spec.origin_x, spec.origin_y],
         "loss_tile_indices": loss_indices.tolist(),
         "source_pixel_counts": {
             int(value): int(count) for value, count in zip(source_values, source_counts)
@@ -1195,6 +1290,15 @@ def main() -> None:
     logging.info("Loading selected-tract patch footprints")
     selected_footprints = load_patch_footprints(args.dc2_root, selected_tracts)
     logging.info("Loaded %d selected-tract patch footprints", len(selected_footprints))
+    grids = {tract: tract_grid(selected_footprints, tract) for tract in selected_tracts}
+    for tract, grid in grids.items():
+        logging.info(
+            "tract=%s pixel grid %d x %d, crop grid %d x %d",
+            tract,
+            grid.width,
+            grid.height,
+            *crop_grid_shape(grid, args.stride),
+        )
     logging.info("Loading truth tract sky bounds")
     all_truth_bounds = truth_tract_bounds(args.dc2_root)
     footprint_tracts = set(selected_tracts)
@@ -1237,8 +1341,8 @@ def main() -> None:
     failures = []
     summaries = []
 
-    all_specs = iter_crop_specs_for_patches(
-        selected_footprints,
+    all_specs = iter_crop_specs_for_tracts(
+        grids,
         args.tile_slen,
         args.interior_tiles,
         args.border_tiles,
@@ -1247,9 +1351,9 @@ def main() -> None:
         all_specs = all_specs[: args.max_crops]
     total = len(all_specs)
     logging.info(
-        "Found %d patch-local padded crop specs (%d selected patches)",
+        "Found %d padded crop specs on the pixel grids of %d tracts",
         total,
-        len(selected_footprints),
+        len(grids),
     )
 
     for done, spec in enumerate(all_specs, start=1):
@@ -1267,8 +1371,8 @@ def main() -> None:
             continue
 
         try:
-            nominal_footprint = footprints[(spec.nominal_tract, spec.nominal_patch)]
-            target_wcs = crop_wcs(nominal_footprint.wcs, spec.origin_x, spec.origin_y)
+            grid = grids[spec.nominal_tract]
+            target_wcs = crop_wcs(grid.wcs, spec.origin_x, spec.origin_y)
             bounds = crop_bounds(target_wcs, args.crop_slen)
 
             candidates = source_candidates(
@@ -1276,22 +1380,20 @@ def main() -> None:
                 bounds,
                 args.patch_padding_deg,
                 spec.nominal_tract,
-                spec.nominal_patch,
             )
             image, source_id, source_names = assemble_crop_image(
-                candidates, image_cache, target_wcs, args.crop_slen
+                candidates, image_cache, target_wcs, args.crop_slen, spec.nominal_tract
             )
             image_valid_tile_mask = tile_valid_mask(source_id, args.tile_slen)
             if args.complete_context_only and not image_valid_tile_mask.all():
                 skipped_incomplete_context += 1
                 logging.info(
-                    "[%d/%d] skipped incomplete-context tract=%s patch=%s crop=%d "
+                    "[%d/%d] skipped incomplete-context tract=%s crop=%s "
                     "valid_tiles=%d/%d eta=%s",
                     done,
                     total,
                     spec.nominal_tract,
-                    spec.nominal_patch,
-                    spec.index,
+                    (spec.crop_row, spec.crop_col),
                     int(image_valid_tile_mask.sum().item()),
                     image_valid_tile_mask.numel(),
                     format_eta(run_start, done, total),
@@ -1307,13 +1409,12 @@ def main() -> None:
             )
             if catalog.empty:
                 empty_catalogs.append(
-                    (spec.nominal_tract, spec.nominal_patch, spec.index)
+                    (spec.nominal_tract, spec.crop_row, spec.crop_col)
                 )
                 logging.warning(
-                    "No usable catalog rows for tract=%s patch=%s crop=%d",
+                    "No usable catalog rows for tract=%s crop=%s",
                     spec.nominal_tract,
-                    spec.nominal_patch,
-                    spec.index,
+                    (spec.crop_row, spec.crop_col),
                 )
                 continue
 
@@ -1323,7 +1424,7 @@ def main() -> None:
             written_path = write_example(
                 args,
                 spec,
-                nominal_footprint,
+                grid,
                 image,
                 source_id,
                 source_names,
@@ -1333,10 +1434,7 @@ def main() -> None:
                 psf_params,
                 candidates,
             )
-            loss_mask = (
-                patch_output_tile_mask(args, spec, nominal_footprint)
-                & image_valid_tile_mask
-            )
+            loss_mask = interior_mask(args) & image_valid_tile_mask
             summaries.append(
                 crop_summary(
                     written_path,
@@ -1349,13 +1447,10 @@ def main() -> None:
             )
             written += 1
             logging.info(
-                "[%d/%d] wrote tract=%s patch=%s crop=%d row_col=%s file=%s "
-                "elapsed=%s written=%d eta=%s",
+                "[%d/%d] wrote tract=%s crop=%s file=%s elapsed=%s written=%d eta=%s",
                 done,
                 total,
                 spec.nominal_tract,
-                spec.nominal_patch,
-                spec.index,
                 (spec.crop_row, spec.crop_col),
                 written_path.name,
                 format_duration(time.monotonic() - crop_start),
@@ -1364,13 +1459,12 @@ def main() -> None:
             )
         except Exception as exc:
             failures.append(
-                (spec.nominal_tract, spec.nominal_patch, spec.index, repr(exc))
+                (spec.nominal_tract, spec.crop_row, spec.crop_col, repr(exc))
             )
             logging.exception(
-                "Failed tract=%s patch=%s crop=%d",
+                "Failed tract=%s crop=%s",
                 spec.nominal_tract,
-                spec.nominal_patch,
-                spec.index,
+                (spec.crop_row, spec.crop_col),
             )
             if not args.skip_errors:
                 raise

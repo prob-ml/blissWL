@@ -21,10 +21,11 @@ from omegaconf import OmegaConf
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 
+from images_to_maps.dc2.dc2 import padded_crop_position  # noqa: E402
+
 LOGGER = logging.getLogger(__name__)
 
 FIELDS = ("shear_1", "shear_2", "convergence")
-FILE_RE = re.compile(r"tract_(?P<tract>\d+)_patch_(?P<patch_x>\d+)_(?P<patch_y>\d+)")
 DEFAULT_CKPT_DIR = (
     "images_to_maps/results/dc2/flowmatching/"
     "padded_nanpsf_512_True_False_scale100.0/checkpoints"
@@ -96,7 +97,6 @@ def parse_args() -> argparse.Namespace:
         default=64,
         help="Number of local crop velocity evaluations batched per sample chunk.",
     )
-    parser.add_argument("--patches-per-side", type=int, default=7)
     parser.add_argument("--device", default=None)
     parser.add_argument("--seed", type=int, default=12345)
     parser.add_argument("--max-files", type=int, default=None)
@@ -144,15 +144,8 @@ def load_file_paths(
     return [Path(path) for path in paths]
 
 
-def file_metadata(path: Path) -> tuple[int, int, int]:
-    match = FILE_RE.search(path.name)
-    if match is None:
-        raise ValueError(f"Could not parse tract/patch from {path.name}")
-    return (
-        int(match.group("tract")),
-        int(match.group("patch_x")),
-        int(match.group("patch_y")),
-    )
+def file_tract(path: Path) -> int:
+    return padded_crop_position(path.name)[0]
 
 
 def load_datum(path: Path) -> dict[str, Any]:
@@ -219,15 +212,6 @@ def make_inference_batch(
     return {"images": images, "psf_params": psf_params}
 
 
-def parse_nominal_patch(datum: dict[str, Any], path: Path) -> tuple[int, int]:
-    nominal_patch = datum.get("nominal_patch")
-    if nominal_patch is not None:
-        patch_x, patch_y = (int(value) for value in str(nominal_patch).split(","))
-        return patch_x, patch_y
-    _, patch_x, patch_y = file_metadata(path)
-    return patch_x, patch_y
-
-
 def crop_interior_indices(datum: dict[str, Any]) -> tuple[torch.Tensor, torch.Tensor]:
     if "interior_mask" in datum:
         mask = datum["interior_mask"].bool()
@@ -240,26 +224,23 @@ def crop_interior_indices(datum: dict[str, Any]) -> tuple[torch.Tensor, torch.Te
         raise ValueError(f"Expected 2D interior mask, got shape {tuple(mask.shape)}")
 
     local_rc = mask.nonzero(as_tuple=False)
-    patch_rc = datum["patch_tile_row_col"][mask].to(torch.long)
-    if local_rc.shape != patch_rc.shape:
+    tract_rc = datum["tract_tile_row_col"][mask].to(torch.long)
+    if local_rc.shape != tract_rc.shape:
         raise ValueError(
-            "interior_mask and patch_tile_row_col selected different shapes: "
-            f"{tuple(local_rc.shape)} vs {tuple(patch_rc.shape)}"
+            "interior_mask and tract_tile_row_col selected different shapes: "
+            f"{tuple(local_rc.shape)} vs {tuple(tract_rc.shape)}"
         )
-    return local_rc, patch_rc
+    return local_rc, tract_rc
 
 
-def infer_shape(
-    datum: dict[str, Any], patches_per_side: int
-) -> tuple[int, int, int, int, int]:
-    patch_shape = datum["patch_output_shape_tiles"].to(torch.long).tolist()
-    if len(patch_shape) != 2:
-        raise ValueError(f"Expected two patch tile dimensions, got {patch_shape}")
-    patch_h, patch_w = (int(patch_shape[0]), int(patch_shape[1]))
+def infer_shape(datum: dict[str, Any]) -> tuple[int, int, int]:
+    """Tract tile grid covered by crop interiors, and the number of redshift bins."""
+    tract_shape = datum["tract_shape_tiles"].to(torch.long).tolist()
+    if len(tract_shape) != 2:
+        raise ValueError(f"Expected two tract tile dimensions, got {tract_shape}")
+    full_h, full_w = (int(tract_shape[0]), int(tract_shape[1]))
     n_bins = int(datum["tile_catalog"]["convergence"].shape[-1])
-    full_h = patches_per_side * patch_h
-    full_w = patches_per_side * patch_w
-    return patch_h, patch_w, full_h, full_w, n_bins
+    return full_h, full_w, n_bins
 
 
 def finite_extent(ra: torch.Tensor, dec: torch.Tensor) -> tuple[tuple[float, ...], str]:
@@ -458,8 +439,7 @@ def save_json(path: Path, data: dict[str, Any]) -> None:
 def group_paths_by_tract(paths: list[Path]) -> dict[int, list[Path]]:
     grouped: dict[int, list[Path]] = defaultdict(list)
     for path in paths:
-        tract, _, _ = file_metadata(path)
-        grouped[tract].append(path)
+        grouped[file_tract(path)].append(path)
     return dict(sorted(grouped.items()))
 
 
@@ -479,15 +459,12 @@ def empty_targets(
 def build_crop_record(
     path: Path,
     datum: dict[str, Any],
-    patch_h: int,
-    patch_w: int,
     full_h: int,
     full_w: int,
 ) -> CropRecord:
-    patch_x, patch_y = parse_nominal_patch(datum, path)
-    patch_rc = datum["patch_tile_row_col"].to(torch.long)
-    global_rows = patch_y * patch_h + patch_rc[..., 0]
-    global_cols = patch_x * patch_w + patch_rc[..., 1]
+    tract_rc = datum["tract_tile_row_col"].to(torch.long)
+    global_rows = tract_rc[..., 0]
+    global_cols = tract_rc[..., 1]
     valid = (
         (global_rows >= 0)
         & (global_rows < full_h)
@@ -497,9 +474,9 @@ def build_crop_record(
     valid_local = valid.nonzero(as_tuple=False)
     invalid_local = (~valid).nonzero(as_tuple=False)
 
-    interior_local, interior_patch = crop_interior_indices(datum)
-    interior_global_rows = patch_y * patch_h + interior_patch[:, 0]
-    interior_global_cols = patch_x * patch_w + interior_patch[:, 1]
+    interior_local, interior_tract = crop_interior_indices(datum)
+    interior_global_rows = interior_tract[:, 0]
+    interior_global_cols = interior_tract[:, 1]
     interior_valid = (
         (interior_global_rows >= 0)
         & (interior_global_rows < full_h)
@@ -553,7 +530,6 @@ def precompute_crop_records_and_embeddings(
     paths: list[Path],
     model: torch.nn.Module,
     device: torch.device,
-    patches_per_side: int,
 ) -> tuple[
     list[CropRecord],
     torch.Tensor,
@@ -561,10 +537,10 @@ def precompute_crop_records_and_embeddings(
     torch.Tensor,
     torch.Tensor,
     torch.Tensor,
-    tuple[int, int, int, int, int],
+    tuple[int, int, int],
 ]:
     first = load_datum(paths[0])
-    patch_h, patch_w, full_h, full_w, n_bins = infer_shape(first, patches_per_side)
+    full_h, full_w, n_bins = infer_shape(first)
     targets, ra, dec, coverage = empty_targets(full_h, full_w, n_bins)
     records: list[CropRecord] = []
     embeddings = []
@@ -572,7 +548,7 @@ def precompute_crop_records_and_embeddings(
     LOGGER.info("Precomputing image embeddings for %d crop files", len(paths))
     for index, path in enumerate(paths, start=1):
         datum = first if index == 1 else load_datum(path)
-        record = build_crop_record(path, datum, patch_h, patch_w, full_h, full_w)
+        record = build_crop_record(path, datum, full_h, full_w)
         place_targets(datum, record, targets, ra, dec, coverage)
         with torch.inference_mode():
             batch = make_inference_batch(datum, device, batch_size=1)
@@ -596,7 +572,7 @@ def precompute_crop_records_and_embeddings(
         ra,
         dec,
         coverage,
-        (patch_h, patch_w, full_h, full_w, n_bins),
+        (full_h, full_w, n_bins),
     )
 
 
@@ -762,7 +738,6 @@ def sample_global_tract(
     num_samples: int,
     sample_batch_size: int,
     crop_batch_size: int,
-    patches_per_side: int,
     allow_incomplete: bool,
     overwrite: bool,
     save_plots: bool,
@@ -781,8 +756,8 @@ def sample_global_tract(
         ra,
         dec,
         coverage,
-        (_patch_h, _patch_w, full_h, full_w, _n_bins),
-    ) = precompute_crop_records_and_embeddings(paths, model, device, patches_per_side)
+        (full_h, full_w, _n_bins),
+    ) = precompute_crop_records_and_embeddings(paths, model, device)
 
     duplicate_count = int((coverage > 1).sum())
     missing_count = int((coverage == 0).sum())
@@ -876,9 +851,7 @@ def main() -> None:
     selected_paths = load_file_paths(cfg, args.cache, args.split)
     if args.tracts is not None:
         wanted = set(args.tracts)
-        selected_paths = [
-            path for path in selected_paths if file_metadata(path)[0] in wanted
-        ]
+        selected_paths = [path for path in selected_paths if file_tract(path) in wanted]
     if args.max_files is not None:
         selected_paths = selected_paths[: args.max_files]
     if not selected_paths:
@@ -917,7 +890,6 @@ def main() -> None:
             num_samples=args.num_samples,
             sample_batch_size=args.sample_batch_size,
             crop_batch_size=args.crop_batch_size,
-            patches_per_side=args.patches_per_side,
             allow_incomplete=args.allow_incomplete,
             overwrite=args.overwrite,
             save_plots=args.save_plots,

@@ -6,7 +6,6 @@ import torch
 TILE_MASK_KEYS = (
     "loss_mask",
     "interior_mask",
-    "nominal_patch_tile_mask",
     "image_valid_tile_mask",
 )
 
