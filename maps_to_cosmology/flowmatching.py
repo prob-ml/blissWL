@@ -73,6 +73,7 @@ class FlowMatching(LightningModule):
         num_ode_steps: int = 20,
         num_samples_for_mode: int = 10,
         ode_method: str = "midpoint",
+        base_channels: int = 32,
     ):
         super().__init__()
         self.save_hyperparameters()
@@ -88,6 +89,7 @@ class FlowMatching(LightningModule):
         self.map_encoder = ResNet(
             num_bins=num_bins,
             output_dim=x_embed_dim,
+            base_channels=base_channels,
         )
         self.time_encoder = TimeEncoder(t_embed_dim=t_embed_dim)
         self.velocity_net = VelocityNet(

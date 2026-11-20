@@ -1,0 +1,45 @@
+# Build DC2 maps on native HEALPix grids.
+
+input:
+  # dc2_truth: truth positions + CosmoDC2 properties; cosmodc2: direct catalogs.
+  source: dc2_truth
+  dc2_root: /nfs/turbo/lsa-regier/dc2_nersc
+  cosmodc2_root: /nfs/turbo/lsa-regier/lsstdesc-public/dc2/cosmoDC2_v1.1.4
+  storage_nside: 32
+  storage_ordering: RING
+  coordinates: [ra, dec]  # cosmodc2 mode only; alternatively [ra_true, dec_true].
+  redshift_field: redshiftHubble  # Raw field corresponding to redshift_true.
+  batch_size: 250000
+  tracts: null  # null = all overlapping truth tracts.
+
+geometry:
+  # array[row,col] = face[y,x].
+  nside: 512
+  ordering: RING
+  face: 8
+  height: 64
+  width: 64
+  center_face_xy: [375.5, 199.5]  # This choice supports complete 96 and 112 crops.
+  require_full_coverage: true  # false allows missing pixels as NaN.
+
+redshift:
+  # true: Smail importance weighting; false: unweighted hard bins.
+  # Smail fits approximate Stage-III n(z); hard bins use different source kernels.
+  use_smail: true
+  z_min: 0.0
+  z_max: 5.0
+  z_points: 1000
+  # Rows are [alpha, beta, z0]; n(z) ~ z**alpha * exp(-(z/z0)**beta).
+  smail_parameters:
+    - [1.98896365, 1.44494416, 0.19581900]
+    - [3.45988090, 2.33902763, 0.39203522]
+    - [6.02912468, 3.60057176, 0.66057689]
+    - [3.53180261, 4.49497939, 1.02932145]
+  max_missing_target_mass: 0.00002
+  warn_proposal_count: 20
+  bin_edges: [0.0, 0.762988, 1.120420, 1.592735, 5.0]
+
+output:
+  # NPZ: map[H,W,C], pixel IDs, diagnostics, and provenance.
+  path: maps_to_cosmology/notebooks/dc2_native_healpix.npz
+  overwrite: false

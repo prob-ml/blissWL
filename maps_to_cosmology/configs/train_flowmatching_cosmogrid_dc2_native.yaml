@@ -1,0 +1,69 @@
+defaults:
+  - override hydra/job_logging: none
+
+seed: 42
+
+hydra:
+  run:
+    dir: .
+  output_subdir: null
+
+paths:
+  cosmogrid_data_dir: /data/scratch/convergence_maps/cosmogrid_native_healpix_64x64
+  dc2_data_dir: /data/scratch/convergence_maps/dc2_lognormal
+  output: maps_to_cosmology
+
+convergence_maps:
+  split_seed: 42
+  batch_size: 64
+  num_workers: 4
+  val_split: 0.1
+  test_split: 0.1
+  standardize_params: true
+  subtract_full_sky_mean: false
+  # Uses all native train-face pixels within the manifest's DEC band, not patches.
+  # Prepare this file once using datamodule_cosmogrid_native --prepare-train-region-means.
+  subtract_train_region_mean: true
+  train_region_stats_file: /data/scratch/convergence_maps/cosmogrid_native_healpix_128x128/train_region_means.pt
+  cache_size: 4
+  smoothing_sigma: 1.0
+  train_dc2_per_cosmogrid: 0
+  augment: false
+
+encoder:
+  _target_: maps_to_cosmology.flowmatching.FlowMatching
+  num_bins: 4
+  x_embed_dim: 128
+  base_channels: 32
+  t_embed_dim: 64
+  velocity_hidden_dim: 256   #originally 128
+  num_cosmo_params: 6
+  lr: 1e-4
+  lr_milestones: [10]
+  lr_gamma: 0.1
+  num_ode_steps: 20
+  num_samples_for_mode: 10
+  ode_method: midpoint
+
+train:
+  trainer:
+    max_epochs: 500
+    accelerator: gpu
+    devices: 1
+    log_every_n_steps: 10
+  logger:
+    _target_: lightning.pytorch.loggers.TensorBoardLogger
+    save_dir: ${paths.output}
+    name: results
+    version: ${now:%m-%d|%H:%M:%S}
+    default_hp_metric: false
+  callbacks:
+    checkpoint:
+      filename: "flowmatching_{epoch:02d}"
+      monitor: val_loss
+      mode: min
+      save_top_k: 1
+    early_stopping:
+      monitor: val_loss
+      patience: 100
+      mode: min

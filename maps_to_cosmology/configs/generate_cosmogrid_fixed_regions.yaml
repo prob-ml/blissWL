@@ -1,0 +1,35 @@
+# Gather native HEALPix pixels without resampling or mean subtraction.
+
+input:
+  directory: /data/cosmogrid_v1
+  expected_nside: 512
+  ordering: RING  # Must match source arrays.
+  max_files: null  # null = all files.
+
+output:
+  directory: /data/scratch/convergence_maps/cosmogrid_native_healpix_64x64
+
+patch:
+  height: 64
+  width: 64
+
+layout:
+  # Maxima must divide NSIDE exactly.
+  max_height: 128
+  max_width: 128
+  # Keep cells only if all pixel centers lie within this band; null = no cut.
+  dec_range_deg: [-60.0, 60.0]
+  seed: 42
+
+# Disjoint face-based splits shared by all cosmologies/permutations.
+# num_patches is per input sky; null = all eligible cells.
+regions:
+  train:
+    faces: [1, 2, 3, 4, 5, 6, 7, 9, 10, 11]
+    num_patches: 64
+  val:
+    faces: [0]
+    num_patches: 8
+  test:
+    faces: [8]
+    num_patches: 8
