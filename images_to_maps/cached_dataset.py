@@ -44,6 +44,11 @@ class ChunkingSampler(Sampler):
     def __iter__(self):
         return iter(self.dataset.get_chunked_indices())
 
+    def set_epoch(self, epoch: int) -> None:
+        """Reshuffle for ``epoch`` (Lightning calls this at the start of every
+        training epoch, including after resuming from a checkpoint)."""
+        self.dataset.current_epoch = epoch
+
 
 class DistributedChunkingSampler(DistributedSampler):
     """Distributed sampler that respects chunked data ordering."""
@@ -66,6 +71,12 @@ class DistributedChunkingSampler(DistributedSampler):
         chunked_indices = self.dataset.get_chunked_indices()
         return iter([chunked_indices[i] for i in pre_indices])
 
+    def set_epoch(self, epoch: int) -> None:
+        # DistributedSampler.set_epoch only affects its own shuffling, which is off;
+        # also pass the epoch to the dataset so every rank reshuffles the same way
+        super().set_epoch(epoch)
+        self.dataset.current_epoch = epoch
+
 
 class ChunkingDataset(Dataset):
     """Dataset that loads data from chunked .pt files."""
@@ -76,7 +87,7 @@ class ChunkingDataset(Dataset):
         self.shuffle = shuffle
         self.transform = transform
         self.seed = seed
-        self.current_epoch = 0  # Updated by datamodule
+        self.current_epoch = 0  # updated by the sampler's set_epoch
 
         self.accumulated_file_sizes = torch.zeros(
             len(self.file_paths), dtype=torch.int64
@@ -320,6 +331,11 @@ class CachedSimulatedDataModule(L.LightningDataModule):
         )
 
     def train_dataloader(self):
+        # Lightning creates the first epoch's iterator before it calls the
+        # sampler's set_epoch, so start from the trainer's epoch here. Otherwise the
+        # first epoch after resuming from a checkpoint reuses epoch 0's order.
+        if self.trainer is not None:
+            self.train_dataset.current_epoch = self.trainer.current_epoch
         return self._get_dataloader(self.train_dataset)
 
     def val_dataloader(self):

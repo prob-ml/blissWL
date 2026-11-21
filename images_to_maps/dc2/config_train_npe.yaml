@@ -70,9 +70,9 @@ encoder:
         factors: ${variational_factors}
     optimizer_params:
         lr: 1e-4
-    scheduler_params:
-        milestones: []
-        gamma: 1.0
+    scheduler_params:  # MultiStepLR, stepped once per epoch
+        milestones: [80]  # lr 1e-4 for epochs 0-79, 1e-5 from epoch 80
+        gamma: 0.1
     loss_plots_location: ${paths.output}/${train.trainer.logger.name}/${train.trainer.logger.version}/loss_plots
     mode_metrics:
         _target_: torchmetrics.MetricCollection
@@ -137,16 +137,29 @@ train:
             _target_: lightning.pytorch.callbacks.ModelCheckpoint
             filename: "encoder_{epoch}"
             save_top_k: 1
-            save_last: true  # last.ckpt, for resuming after a time limit
             verbose: true
             monitor: val/_loss
             mode: min
             save_on_train_epoch_end: false
+        latest_checkpoint:
+            # latest.ckpt, overwritten after every validation, for resuming after a
+            # time limit. (save_last on the callback above only updates when the best
+            # checkpoint changes, so it would resume from the best epoch instead.)
+            _target_: lightning.pytorch.callbacks.ModelCheckpoint
+            filename: latest
+            monitor: null
+            save_top_k: 1
+            save_on_train_epoch_end: false
+            enable_version_counter: false
         early_stopping:
             _target_: lightning.pytorch.callbacks.EarlyStopping
             monitor: val/_loss
             mode: min
             patience: 100
+            # check at validation end (before checkpoints are saved), not at train
+            # epoch end: otherwise resuming from latest.ckpt fails because val/_loss
+            # is not yet logged when the restored epoch's end hooks run
+            check_on_train_epoch_end: false
     data_source: ${surveys.dc2}
     encoder: ${encoder}
     seed: 123123
