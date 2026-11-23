@@ -71,7 +71,7 @@ encoder:
     optimizer_params:
         lr: 1e-4
     scheduler_params:  # MultiStepLR, stepped once per epoch
-        milestones: [80]  # lr 1e-4 for epochs 0-79, 1e-5 from epoch 80
+        milestones: []  # no drops: constant lr
         gamma: 0.1
     loss_plots_location: ${paths.output}/${train.trainer.logger.name}/${train.trainer.logger.version}/loss_plots
     mode_metrics:
@@ -91,17 +91,19 @@ surveys:
     dc2:
         _target_: images_to_maps.dc2.dc2.LensingDC2DataModule
         tile_slen: 256
-        tracts: [3828, 3829]  # tracts to generate (generate_dc2_cache.py) and load
+        tracts: [3828, 3829, 4026, 4027]  # tracts to generate (generate_dc2_cache.py) and load
         # Train/val/test regions as rectangles of crops in each tract's 27 x 27 crop grid
         # (row 0 is the south edge; RA decreases with col). Ranges are inclusive.
         # Test takes precedence over val; all other crops are train.
         splits: null
         split_regions:
-            test:  # 14 x 14 crops, RA 55.70-56.70, Dec -37.22 to -36.42
-                - {tract: 3828, rows: [0, 13], cols: [13, 26]}
-            val:  # L-shaped band, 6 crops wide, around the test block
-                - {tract: 3828, rows: [0, 19], cols: [7, 26]}
-        train_buffer_crops: 1  # drop train crops within this many crops of val/test
+            test:  # 18 x 18 crops, RA 55.70-56.98, Dec -37.22 to -36.20
+                - {tract: 3828, rows: [0, 17], cols: [9, 26]}
+            val:  # L-shaped band, 7 crops wide, around the test block
+                - {tract: 3828, rows: [0, 24], cols: [2, 26]}
+        # drop train crops within this many crops of val/test (same tract only; no
+        # crop of 3829, 4026 or 4027 has an image window touching val/test sky)
+        train_buffer_crops: 1
         avg_ellip_kernel_size: 15  # must be odd
         avg_ellip_kernel_sigma: 15
         redshift_quantiles: [0.00, 0.762988, 1.120420, 1.592735]
@@ -123,12 +125,12 @@ train:
             _target_: lightning.pytorch.loggers.TensorBoardLogger
             save_dir: ${paths.output}
             name: results/dc2/npe
-            version: padded_nanpsf_${encoder.ch_max}_${encoder.initial_downsample}_${encoder.more_up_layers}
+            version: padded_nanpsf_${encoder.ch_max}_${encoder.initial_downsample}_${encoder.more_up_layers}_4tracts
             default_hp_metric: false
         reload_dataloaders_every_n_epochs: 0
         check_val_every_n_epoch: 1
         log_every_n_steps: 10
-        max_epochs: 300
+        max_epochs: 200
         accelerator: gpu
         devices: 1
         precision: 32-true
@@ -155,7 +157,7 @@ train:
             _target_: lightning.pytorch.callbacks.EarlyStopping
             monitor: val/_loss
             mode: min
-            patience: 100
+            patience: 50
             # check at validation end (before checkpoints are saved), not at train
             # epoch end: otherwise resuming from latest.ckpt fails because val/_loss
             # is not yet logged when the restored epoch's end hooks run
