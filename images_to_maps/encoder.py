@@ -5,12 +5,30 @@ import lightning as L
 import torch
 from matplotlib import pyplot as plt
 from torch.optim import Adam
-from torch.optim.lr_scheduler import MultiStepLR
+from torch.optim.lr_scheduler import CosineAnnealingLR, MultiStepLR
 from torchmetrics import MetricCollection
 
 from images_to_maps.convnet import MassMapNet, ScalarShearNet
 from images_to_maps.utils.tile_mask import crop_catalog_to_mask, get_tile_mask
 from images_to_maps.variational_dist import VariationalDist
+
+
+def build_lr_scheduler(optimizer, scheduler_params):
+    """Learning-rate scheduler from ``scheduler_params``, stepped once per epoch.
+
+    ``name: cosine`` gives ``CosineAnnealingLR`` (``T_max``, ``eta_min``).
+    ``name: multistep``, or no ``name`` (as in older configs), gives
+    ``MultiStepLR`` (``milestones``, ``gamma``).
+    """
+    params = dict(scheduler_params)
+    name = params.pop("name", "multistep")
+    if name == "cosine":
+        return CosineAnnealingLR(optimizer, **params)
+    if name == "multistep":
+        return MultiStepLR(optimizer, **params)
+    raise ValueError(
+        f"unknown scheduler name {name!r}; expected 'cosine' or 'multistep'"
+    )
 
 
 class MassMapEncoder(L.LightningModule):
@@ -130,7 +148,7 @@ class MassMapEncoder(L.LightningModule):
     def configure_optimizers(self):
         """Configure optimizers for training (pytorch lightning)."""
         optimizer = Adam(self.parameters(), **self.optimizer_params)
-        scheduler = MultiStepLR(optimizer, **self.scheduler_params)
+        scheduler = build_lr_scheduler(optimizer, self.scheduler_params)
         return [optimizer], [scheduler]
 
     def update_metrics(self, batch, batch_idx):
@@ -363,7 +381,7 @@ class ScalarShearEncoder(L.LightningModule):
     def configure_optimizers(self):
         """Configure optimizers for training (pytorch lightning)."""
         optimizer = Adam(self.parameters(), **self.optimizer_params)
-        scheduler = MultiStepLR(optimizer, **self.scheduler_params)
+        scheduler = build_lr_scheduler(optimizer, self.scheduler_params)
         return [optimizer], [scheduler]
 
     def update_metrics(self, batch, batch_idx):

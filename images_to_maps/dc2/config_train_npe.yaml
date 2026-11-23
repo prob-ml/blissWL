@@ -70,9 +70,10 @@ encoder:
         factors: ${variational_factors}
     optimizer_params:
         lr: 1e-4
-    scheduler_params:  # MultiStepLR, stepped once per epoch
-        milestones: []  # no drops: constant lr
-        gamma: 0.1
+    scheduler_params:  # stepped once per epoch (encoder.build_lr_scheduler)
+        name: cosine  # cosine decay from optimizer_params.lr to eta_min
+        T_max: ${train.trainer.max_epochs}  # lr reaches eta_min at the end of training
+        eta_min: 1e-6
     loss_plots_location: ${paths.output}/${train.trainer.logger.name}/${train.trainer.logger.version}/loss_plots
     mode_metrics:
         _target_: torchmetrics.MetricCollection
@@ -125,12 +126,12 @@ train:
             _target_: lightning.pytorch.loggers.TensorBoardLogger
             save_dir: ${paths.output}
             name: results/dc2/npe
-            version: padded_nanpsf_${encoder.ch_max}_${encoder.initial_downsample}_${encoder.more_up_layers}_4tracts
+            version: padded_nanpsf_${encoder.ch_max}_${encoder.initial_downsample}_${encoder.more_up_layers}_4tracts_cosine
             default_hp_metric: false
         reload_dataloaders_every_n_epochs: 0
         check_val_every_n_epoch: 1
         log_every_n_steps: 10
-        max_epochs: 200
+        max_epochs: 80  # also the length of the cosine schedule (scheduler_params.T_max)
         accelerator: gpu
         devices: 1
         precision: 32-true
@@ -153,15 +154,8 @@ train:
             save_top_k: 1
             save_on_train_epoch_end: false
             enable_version_counter: false
-        early_stopping:
-            _target_: lightning.pytorch.callbacks.EarlyStopping
-            monitor: val/_loss
-            mode: min
-            patience: 50
-            # check at validation end (before checkpoints are saved), not at train
-            # epoch end: otherwise resuming from latest.ckpt fails because val/_loss
-            # is not yet logged when the restored epoch's end hooks run
-            check_on_train_epoch_end: false
+        # no early stopping: the cosine schedule runs for all max_epochs, and the
+        # checkpointing callback above keeps the epoch with the best val/_loss
     data_source: ${surveys.dc2}
     encoder: ${encoder}
     seed: 123123
