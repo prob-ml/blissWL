@@ -89,8 +89,9 @@ SELECTIONS = ("all_detected", "metacal_like", "metacal")
 DEFAULT_METACAL = DEFAULT_CATALOGS / (
     "DC2-prod/Run2.2i/dpdd/Run2.2i-dr6-v2/metacal_table_summary"
 )
-# tract 3828 test region (tile rows [0, 56), cols [52, 108)), as used for NPE
-DEFAULT_TEST_TILES = (0, 56, 52, 108)
+# tract 3828 test region of the four-tract NPE split (crop rows 0-17, cols 9-26:
+# tile rows [0, 72), cols [36, 108))
+DEFAULT_TEST_TILES = (0, 72, 36, 108)
 METACAL_FRAME_SIGN = -1.0
 METACAL_STEP = 0.01  # metacal shear step: R = (g_+ - g_-) / (2 * step)
 METACAL_VARIANTS = ("", "_1p", "_1m", "_2p", "_2m")
