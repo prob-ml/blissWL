@@ -110,7 +110,7 @@ surveys:
         redshift_quantiles: [0.00, 0.762988, 1.120420, 1.592735]
         num_redshift_bins: 4  # length of redshift_quantiles
         batch_size: 1
-        num_workers: 1
+        num_workers: 4  # one crop per cached file, so workers read different files in parallel
         cached_data_path: ${paths.dc2_cache}
         exclude_file_list_path: null
         train_transforms:
@@ -126,12 +126,12 @@ train:
             _target_: lightning.pytorch.loggers.TensorBoardLogger
             save_dir: ${paths.output}
             name: results/dc2/npe
-            version: padded_nanpsf_${encoder.ch_max}_${encoder.initial_downsample}_${encoder.more_up_layers}_4tracts_cosine
+            version: padded_nanpsf_${encoder.ch_max}_${encoder.initial_downsample}_${encoder.more_up_layers}_4tracts_cosine100
             default_hp_metric: false
         reload_dataloaders_every_n_epochs: 0
         check_val_every_n_epoch: 1
         log_every_n_steps: 10
-        max_epochs: 80  # also the length of the cosine schedule (scheduler_params.T_max)
+        max_epochs: 100  # also the length of the cosine schedule (scheduler_params.T_max)
         accelerator: gpu
         devices: 1
         precision: 32-true
